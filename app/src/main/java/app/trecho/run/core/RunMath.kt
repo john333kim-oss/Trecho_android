@@ -15,6 +15,8 @@ data class RunRecord(
     val splits: List<Split>,
     val uploaded: Boolean = false,
     val title: String? = null,
+    /** 기록 출처: "phone"(이 앱 GPS) 또는 가져온 앱 이름(예: "Garmin") */
+    val source: String = "phone",
 ) {
     val avgPaceSecPerKm: Double? get() = if (distM >= 50) activeMs / 1000.0 / (distM / 1000.0) else null
     val cadenceSpm: Int? get() = if (activeMs >= 60_000 && steps > 0) (steps * 60_000.0 / activeMs).toInt() else null

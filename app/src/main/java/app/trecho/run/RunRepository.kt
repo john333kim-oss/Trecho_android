@@ -51,6 +51,8 @@ class RunRepository(private val ctx: Context) {
 
     suspend fun save(r: RunRecord) = withContext(Dispatchers.IO) { write(r) }
 
+    fun exists(id: String) = fileOf(id).exists() || legacyOf(id).exists()
+
     suspend fun delete(id: String) = withContext(Dispatchers.IO) { fileOf(id).delete(); legacyOf(id).delete() }
 
     /**
@@ -91,6 +93,7 @@ class RunRepository(private val ctx: Context) {
         put("id", r.id); put("startWallMs", r.startWallMs); put("distM", r.distM); put("activeMs", r.activeMs)
         put("steps", r.steps); put("strideM", r.strideM); put("uploaded", r.uploaded)
         r.title?.let { put("title", it) }
+        put("source", r.source)
         put("points", JSONArray().apply {
             r.points.forEach { p ->
                 put(JSONArray().apply {
@@ -119,6 +122,7 @@ class RunRepository(private val ctx: Context) {
             strideM = o.optDouble("strideM", 1.0),
             uploaded = o.optBoolean("uploaded"),
             title = o.optString("title").ifEmpty { null },
+            source = o.optString("source").ifEmpty { "phone" },
             points = (0 until pts.length()).map { i ->
                 val a = pts.getJSONArray(i)
                 TrackPoint(a.getDouble(0), a.getDouble(1), if (a.isNull(2)) null else a.getDouble(2),
@@ -145,6 +149,10 @@ class Settings(ctx: Context) {
     var language: String
         get() = prefs.getString("language", "ko") ?: "ko"
         set(v) = prefs.edit().putString("language", v).apply()
+    /** Health Connect(Garmin) 마지막 가져오기 시각, 0이면 없음 */
+    var lastSyncMs: Long
+        get() = prefs.getLong("lastSyncMs", 0L)
+        set(v) = prefs.edit().putLong("lastSyncMs", v).apply()
     var userName: String
         get() = prefs.getString("userName", "").orEmpty()
         set(v) = prefs.edit().putString("userName", v.trim()).apply()

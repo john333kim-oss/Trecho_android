@@ -22,6 +22,17 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.compose.foundation.Image
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.health.connect.client.PermissionController
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -180,6 +191,66 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
     var userName by remember { mutableStateOf(settings.userName) }
     LaunchedEffect(reload) { runs = repo.all() }
 
+    // ---- Garmin(Health Connect) 연동
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val health = remember { HealthSync(ctx.applicationContext, repo) }
+    var garmin by remember { mutableStateOf(GarminUi(HealthSync.Status.UNAVAILABLE, settings.lastSyncMs, null, false)) }
+    fun syncGarmin() {
+        scope.launch {
+            val st = runCatching { health.status() }.getOrDefault(HealthSync.Status.UNAVAILABLE)
+            garmin = garmin.copy(status = st)
+            if (st != HealthSync.Status.CONNECTED) return@launch
+            garmin = garmin.copy(syncing = true)
+            val res = runCatching { health.importRuns() }.getOrNull()
+            if (res != null) {
+                settings.lastSyncMs = System.currentTimeMillis()
+                garmin = garmin.copy(lastSyncMs = settings.lastSyncMs, latestGarminMs = res.latestGarminMs ?: garmin.latestGarminMs)
+                if (res.imported > 0) reload++
+            }
+            garmin = garmin.copy(syncing = false)
+        }
+    }
+    val hcPermLauncher = rememberLauncherForActivityResult(PermissionController.createRequestPermissionResultContract()) { syncGarmin() }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val obs = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_RESUME) syncGarmin() }
+        lifecycle.addObserver(obs)
+        onDispose { lifecycle.removeObserver(obs) }
+    }
+    fun connectGarmin() {
+        when (garmin.status) {
+            HealthSync.Status.NO_PERMISSION -> hcPermLauncher.launch(health.permissions)
+            HealthSync.Status.CONNECTED -> syncGarmin()
+            else -> runCatching {
+                // Health Connect가 없거나 업데이트가 필요하면 Play 스토어로
+                ctx.startActivity(Intent(Intent.ACTION_VIEW,
+                    Uri.parse("market://details?id=com.google.android.apps.healthdata")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+        }
+    }
+
+    // ---- 인스타 공유: 사진 고르기 → 기록 얹은 이미지 → 미리보기
+    var shareRun by remember { mutableStateOf<RunRecord?>(null) }
+    var shareFile by remember { mutableStateOf<java.io.File?>(null) }
+    var shareBusy by remember { mutableStateOf(false) }
+    val lang = LocalLang.current
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        val run = shareRun
+        if (uri == null || run == null) { shareRun = null; return@rememberLauncherForActivityResult }
+        shareBusy = true
+        scope.launch {
+            shareFile = runCatching {
+                withContext(Dispatchers.Default) { ShareImage.render(ctx, uri, run, lang == Lang.EN) }
+            }.getOrNull()
+            shareBusy = false
+        }
+    }
+    fun startShare(r: RunRecord) {
+        shareRun = r
+        photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+    }
+
     BackHandler(enabled = !recording && (overlay != null || tab != Tab.Home)) {
         if (overlay != null) overlay = null else tab = Tab.Home
     }
@@ -193,10 +264,12 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
         } else Column(Modifier.fillMaxSize()) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (val o = overlay) {
-                    is Overlay.Detail -> DetailScreen(o.id, repo, settings, runs, onBack = { reload++; overlay = null })
+                    is Overlay.Detail -> DetailScreen(o.id, repo, settings, runs, onShare = { startShare(it) }, onBack = { reload++; overlay = null })
                     Overlay.Settings -> SettingsScreen(settings, onLang, onBack = { userName = settings.userName; overlay = null })
                     null -> when (tab) {
-                        Tab.Home -> HomeScreen(runs, userName,
+                        Tab.Home -> HomeScreen(runs, userName, garmin,
+                            onGarmin = { connectGarmin() },
+                            onShare = { startShare(it) },
                             onOpen = { overlay = Overlay.Detail(it) },
                             onGoRun = { tab = Tab.Run })
                         Tab.Run -> ReadyScreen(runs, onStart = { recording = true })
@@ -221,23 +294,63 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
             }
         }
     }
+
+    if (shareBusy) {
+        AlertDialog(onDismissRequest = {}, confirmButton = {}, text = { Text(lang.t("이미지 만드는 중…", "Creating image…")) })
+    }
+    shareFile?.let { f ->
+        val img = remember(f) { android.graphics.BitmapFactory.decodeFile(f.path)?.asImageBitmap() }
+        AlertDialog(
+            onDismissRequest = { shareFile = null; shareRun = null },
+            title = { Text(lang.t("인스타그램에 공유", "Share to Instagram")) },
+            text = { img?.let { Image(it, contentDescription = null, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))) } },
+            confirmButton = {
+                Button(onClick = {
+                    ShareImage.shareToInstagram(ctx, ShareImage.uriFor(ctx, f)); shareFile = null; shareRun = null
+                }) { Text(lang.t("Instagram 게시물", "Instagram post")) }
+            },
+            dismissButton = {
+                TextButton(onClick = { ShareImage.shareAny(ctx, ShareImage.uriFor(ctx, f)); shareFile = null; shareRun = null }) {
+                    Text(lang.t("다른 앱", "Other apps"))
+                }
+            },
+        )
+    }
 }
+
+private data class GarminUi(val status: HealthSync.Status, val lastSyncMs: Long, val latestGarminMs: Long?, val syncing: Boolean)
 
 // ---------------------------------------------------------------- 홈
 
 @Composable
-private fun HomeScreen(runs: List<RunRecord>, userName: String, onOpen: (String) -> Unit, onGoRun: () -> Unit) {
+private fun HomeScreen(
+    runs: List<RunRecord>, userName: String, garmin: GarminUi,
+    onGarmin: () -> Unit, onShare: (RunRecord) -> Unit, onOpen: (String) -> Unit, onGoRun: () -> Unit,
+) {
     val l = LocalLang.current
     val zone = ZoneId.systemDefault()
     val monday = LocalDate.now().with(TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY))
     val weekRuns = runs.filter { Instant.ofEpochMilli(it.startWallMs).atZone(zone).toLocalDate() >= monday }
     val bests = remember(runs) { personalBests(runs) }
-    val latest = runs.maxByOrNull { it.startWallMs }
+    // 최근 3일(오늘 포함) 기록. 없으면 마지막 1개.
+    val since = LocalDate.now().minusDays(2)
+    val recent = runs.filter { localDate(it.startWallMs) >= since }.sortedByDescending { it.startWallMs }
+        .ifEmpty { listOfNotNull(runs.maxByOrNull { it.startWallMs }) }
 
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { GarminBar(garmin, onGarmin, Modifier.padding(horizontal = 16.dp)) }
         item { Wordmark(Modifier.padding(horizontal = 16.dp)) }
-        if (latest != null) {
-            item { LatestRunCard(latest, userName) { onOpen(latest.id) } }
+        if (recent.isNotEmpty()) {
+            item {
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(l.t("최근 러닝", "Recent runs"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f))
+                    IconButton(onClick = { onShare(recent.first()) }) {
+                        Icon(Icons.Filled.Share, contentDescription = l.t("인스타그램 공유", "Share to Instagram"))
+                    }
+                }
+            }
+            items(recent, key = { "recent-" + it.id }) { r -> LatestRunCard(r, userName) { onOpen(r.id) } }
         } else item {
             Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(l.t("아직 기록이 없습니다. 첫 러닝을 시작해 보세요.", "No runs yet. Start your first run."),
@@ -269,15 +382,6 @@ private fun HomeScreen(runs: List<RunRecord>, userName: String, onOpen: (String)
                 }
             }
         }
-        if (runs.size > 1) {
-            item {
-                Text(l.t("기록", "Activities"), style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.padding(start = 16.dp, top = 8.dp))
-            }
-            items(runs.filter { it.id != latest?.id }, key = { it.id }) { r ->
-                Box(Modifier.padding(horizontal = 16.dp)) { RunRow(r) { onOpen(r.id) } }
-            }
-        }
         item {
             Text(
                 "Build by 김기룡",
@@ -290,6 +394,45 @@ private fun HomeScreen(runs: List<RunRecord>, userName: String, onOpen: (String)
     }
 }
 
+/** 홈 맨 위 Garmin 연동 상태 줄 */
+@Composable
+private fun GarminBar(g: GarminUi, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val l = LocalLang.current
+    val ok = g.status == HealthSync.Status.CONNECTED
+    val timeFmt = DateTimeFormatter.ofPattern(if (l == Lang.EN) "MMM d, h:mm a" else "M/d HH:mm",
+        if (l == Lang.EN) Locale.ENGLISH else Locale.KOREAN)
+    fun fmt(ms: Long) = Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).format(timeFmt)
+    val (title, detail, action) = when (g.status) {
+        HealthSync.Status.CONNECTED -> Triple(
+            l.t("Garmin 연결됨", "Garmin connected"),
+            if (g.syncing) l.t("가져오는 중…", "Syncing…") else listOfNotNull(
+                g.latestGarminMs?.let { l.t("마지막 Garmin 러닝 ", "Last Garmin run ") + fmt(it) },
+                if (g.lastSyncMs > 0) l.t("확인 ", "Checked ") + fmt(g.lastSyncMs) else null,
+            ).joinToString(" · ").ifEmpty { l.t("Garmin Connect에서 Health Connect 공유를 켜 주세요", "Turn on Health Connect sharing in Garmin Connect") },
+            l.t("새로고침", "Refresh"),
+        )
+        HealthSync.Status.NO_PERMISSION -> Triple(l.t("Garmin 연결 안 됨", "Garmin not connected"),
+            l.t("Health Connect 권한을 허용하면 워치 기록을 가져옵니다", "Allow Health Connect access to import watch runs"), l.t("연결", "Connect"))
+        HealthSync.Status.NEEDS_UPDATE -> Triple(l.t("Garmin 연결 안 됨", "Garmin not connected"),
+            l.t("Health Connect 업데이트가 필요합니다", "Health Connect needs an update"), l.t("업데이트", "Update"))
+        HealthSync.Status.UNAVAILABLE -> Triple(l.t("Garmin 연결 안 됨", "Garmin not connected"),
+            l.t("Health Connect를 사용할 수 없습니다", "Health Connect is not available"), l.t("설치", "Install"))
+    }
+    Row(
+        modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surface)
+            .clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(10.dp).clip(CircleShape).background(if (ok) Color(0xFF1F8A5B) else MaterialTheme.colorScheme.outline))
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(detail, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+        }
+        Text(action, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+    }
+}
+
 /** 마지막 러닝: 머리글 → 지도 → 거리·페이스·시간 */
 @Composable
 private fun LatestRunCard(r: RunRecord, userName: String, onClick: () -> Unit) {
@@ -299,8 +442,9 @@ private fun LatestRunCard(r: RunRecord, userName: String, onClick: () -> Unit) {
             Avatar(userName, 44.dp)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(r.title ?: l.t("최근 러닝", "Latest run"), fontWeight = FontWeight.Bold, fontSize = 17.sp)
-                Text(dateLabel(l, r.startWallMs), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                Text(r.title ?: l.t("러닝", "Run"), fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                Text(dateLabel(l, r.startWallMs) + if (r.source != "phone") " · ${r.source}" else "",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
             }
         }
         if (r.points.size >= 2) {
@@ -329,7 +473,8 @@ private fun RunRow(r: RunRecord, onClick: () -> Unit) {
     ) {
         Column(Modifier.weight(1f)) {
             Text(r.title ?: dateLabel(l, r.startWallMs), fontWeight = FontWeight.Bold)
-            Text("${formatDuration(r.activeMs)} · ${formatPace(r.avgPaceSecPerKm)}/km" + if (r.uploaded) l.t(" · 전송됨", " · Sent") else "",
+            Text("${formatDuration(r.activeMs)} · ${formatPace(r.avgPaceSecPerKm)}/km" +
+                (if (r.source != "phone") " · ${r.source}" else "") + if (r.uploaded) l.t(" · 전송됨", " · Sent") else "",
                 color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
         }
         Text("${formatKm(r.distM)} km", fontWeight = FontWeight.Black, fontSize = 18.sp)
@@ -724,7 +869,7 @@ private fun GpsChip(ok: Boolean, modifier: Modifier) {
 // ---------------------------------------------------------------- 기록 상세
 
 @Composable
-private fun DetailScreen(id: String, repo: RunRepository, settings: Settings, all: List<RunRecord>, onBack: () -> Unit) {
+private fun DetailScreen(id: String, repo: RunRepository, settings: Settings, all: List<RunRecord>, onShare: (RunRecord) -> Unit, onBack: () -> Unit) {
     val l = LocalLang.current
     val scope = rememberCoroutineScope()
     var run by remember { mutableStateOf<RunRecord?>(null) }
@@ -738,7 +883,8 @@ private fun DetailScreen(id: String, repo: RunRepository, settings: Settings, al
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onBack) { Text(l.t("‹ 뒤로", "‹ Back")) }
             Spacer(Modifier.weight(1f))
-            Text(dateLabel(l, r.startWallMs), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 12.dp))
+            Text(dateLabel(l, r.startWallMs), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            IconButton(onClick = { onShare(r) }) { Icon(Icons.Filled.Share, contentDescription = l.t("공유", "Share")) }
         }
         if (r.points.isNotEmpty()) {
             RouteMap(r.points, follow = false, lineColor = MaterialTheme.colorScheme.secondary,

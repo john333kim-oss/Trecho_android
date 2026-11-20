@@ -18,6 +18,14 @@
 4. 처음 "러닝 시작"을 누르면 위치(정확한 위치)·신체 활동·알림 권한을 허용합니다.
 5. **꼭**: 설정 → 애플리케이션 → RunKKRun → 배터리 → "제한 없음". 갤럭시 절전 기능이 화면 꺼진 앱을 멈추는 것을 막습니다.
 
+## Garmin 워치 기록 가져오기
+1. Garmin Connect 앱 → 설정 → Health Connect(또는 '앱 연결/데이터 공유')에서 Health Connect 공유를 켭니다.
+2. KR Run 홈 맨 위 "Garmin 연결 안 됨 · 연결"을 눌러 Health Connect 읽기 권한(운동·거리·걸음)을 허용합니다.
+3. 앱을 열 때마다 최근 30일 Garmin 러닝을 가져옵니다. Garmin은 GPS 경로를 Health Connect에 쓰지 않아 가져온 기록에는 지도가 없습니다.
+
+## 인스타그램 공유
+홈 '최근 러닝' 오른쪽 공유 버튼(또는 기록 상세의 공유 버튼) → 사진 고르기 → 기록을 얹은 4:5 이미지 미리보기 → "Instagram 게시물".
+
 ## Google 지도 키 연결
 1. Google Cloud 콘솔에서 프로젝트를 만들고 결제 계정을 연결한 뒤 "Maps SDK for Android"를 사용 설정합니다.
 2. 사용자 인증 정보 → API 키 만들기 → 키 제한: "Android 앱", 패키지 `app.trecho.run`, SHA-1 `CF:90:92:91:AA:9E:78:39:72:2A:51:CE:79:CA:B2:EA:21:E8:FD:9F` (저장소의 debug.keystore). API 제한: Maps SDK for Android만.
