@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 트랙 레인 3줄과 달리는 점. 108dp 캔버스, 가운데 72dp 안전영역 안. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFFFF" android:pathData="M33,39h42a3,3 0 0 1 0,6h-42a3,3 0 0 1 0,-6z" />
+    <path android:fillColor="#E2553A" android:pathData="M33,51h42a3,3 0 0 1 0,6h-42a3,3 0 0 1 0,-6z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M33,63h42a3,3 0 0 1 0,6h-42a3,3 0 0 1 0,-6z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M67,54m-7,0a7,7 0 1 1 14,0a7,7 0 1 1 -14,0" />
+</vector>
