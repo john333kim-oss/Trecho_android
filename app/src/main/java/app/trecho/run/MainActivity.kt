@@ -100,6 +100,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -212,7 +213,7 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
             // 1) Personal API 키가 있으면 경로 포함 기록 먼저
             if (garminApi.hasKey) {
                 val r = runCatching { garminApi.importRuns() }
-                garmin = garmin.copy(api = when (r.exceptionOrNull()) {
+                garmin = garmin.copy(apiError = garminApi.lastError, api = when (r.exceptionOrNull()) {
                     null -> ApiState.OK
                     is GarminApi.AuthException -> ApiState.KEY_ERROR
                     else -> ApiState.NET_ERROR
@@ -343,7 +344,7 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
 private enum class ApiState { OFF, OK, KEY_ERROR, NET_ERROR }
 
 private data class GarminUi(val status: HealthSync.Status, val lastSyncMs: Long, val latestGarminMs: Long?, val syncing: Boolean,
-                            val api: ApiState = ApiState.OFF)
+                            val api: ApiState = ApiState.OFF, val apiError: String? = null)
 
 // ---------------------------------------------------------------- 홈
 
@@ -433,11 +434,12 @@ private fun GarminBar(g: GarminUi, onClick: () -> Unit, modifier: Modifier = Mod
     ).joinToString(" · ")
     val (title, detail, action) = if (g.api != ApiState.OFF) when (g.api) {
         ApiState.KEY_ERROR -> Triple(l.t("Garmin API 키 확인 필요", "Check Garmin API key"),
-            l.t("키가 틀렸거나 만료됐습니다. 설정에서 새 키를 넣어 주세요", "Key is wrong or expired. Enter a new key in Settings"), l.t("설정", "Settings"))
+            l.t("키가 틀렸거나 만료됐습니다: ", "Key is wrong or expired: ") + (g.apiError ?: ""), l.t("설정", "Settings"))
         ApiState.NET_ERROR -> Triple(l.t("Garmin 연결됨 (경로 포함)", "Garmin connected (with routes)"),
-            l.t("이번 가져오기 실패. 잠시 뒤 다시 눌러 주세요", "Sync failed. Tap to retry later"), l.t("다시", "Retry"))
+            l.t("가져오기 실패: ", "Sync failed: ") + (g.apiError ?: "?"), l.t("다시", "Retry"))
         else -> Triple(l.t("Garmin 연결됨 (경로 포함)", "Garmin connected (with routes)"),
-            syncedDetail.ifEmpty { l.t("새로고침을 눌러 가져오세요", "Tap Refresh to import") }, l.t("새로고침", "Refresh"))
+            listOfNotNull(syncedDetail.ifEmpty { null }, g.apiError?.let { l.t("일부 실패: ", "Some failed: ") + it }).joinToString(" · ")
+                .ifEmpty { l.t("새로고침을 눌러 가져오세요", "Tap Refresh to import") }, l.t("새로고침", "Refresh"))
     } else when (g.status) {
         HealthSync.Status.CONNECTED -> Triple(
             l.t("Garmin 연결됨", "Garmin connected"),
@@ -463,7 +465,7 @@ private fun GarminBar(g: GarminUi, onClick: () -> Unit, modifier: Modifier = Mod
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Text(title, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Text(detail, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+            Text(detail, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 4)
         }
         Text(action, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
     }
@@ -1045,6 +1047,11 @@ private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (La
             if (gKey.isNotEmpty()) TextButton(onClick = { gKey = "" }) { Text(l.t("지우기", "Clear")) }
         }
         if (!keyDirty && garminApi.hasKey) Text(l.t("✓ 키 저장됨", "✓ Key saved"), color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
+        garminApi.lastError?.let { err ->
+            SelectionContainer {
+                Text(l.t("마지막 오류: ", "Last error: ") + err, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+            }
+        }
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
         Text(l.t("Claude 연결 서버", "Claude server"), style = MaterialTheme.typography.titleMedium)
         Text(l.t("PC에서 돌리는 기록 서버 주소입니다. 비밀 경로까지 넣으세요. 예: https://run.내도메인/<비밀경로>",

@@ -29,6 +29,12 @@ class GarminApi(ctx: Context, private val repo: RunRepository) {
     private val prefs = ctx.getSharedPreferences("garmin_secret", Context.MODE_PRIVATE)
 
     class AuthException(msg: String) : IOException(msg)
+    class HttpException(msg: String) : IOException(msg)
+
+    /** 마지막 실패 사유(화면 표시용). 성공하면 지운다. 키·토큰은 넣지 않는다. */
+    var lastError: String?
+        get() = prefs.getString("lastError", null)
+        private set(v) = prefs.edit().putString("lastError", v).apply()
     data class Result(val imported: Int, val latestMs: Long?)
 
     var apiKey: String
@@ -37,16 +43,25 @@ class GarminApi(ctx: Context, private val repo: RunRepository) {
     val hasKey get() = apiKey.isNotEmpty()
 
     private fun http(method: String, path: String, auth: String, accept: String = "application/json"): ByteArray {
+        val step = path.substringBefore('?').split('/').firstOrNull { it.isNotEmpty() } ?: path
         val c = URL(BASE + path).openConnection() as HttpURLConnection
         try {
             c.requestMethod = method
             c.connectTimeout = 30_000; c.readTimeout = 30_000
             c.setRequestProperty("Authorization", auth)
             c.setRequestProperty("Accept", accept)
-            if (method == "POST") { c.doOutput = true; c.setFixedLengthStreamingMode(0) }
-            val code = c.responseCode
-            if (code == 401 || code == 403) throw AuthException("HTTP $code")
-            if (code !in 200..299) throw IOException("HTTP $code")
+            if (method == "POST") {
+                c.doOutput = true; c.setFixedLengthStreamingMode(0)
+                c.setRequestProperty("Content-Type", "application/json")
+            }
+            val code = try { c.responseCode } catch (e: IOException) { throw IOException("$step: ${e.javaClass.simpleName} ${e.message}") }
+            if (code !in 200..299) {
+                val body = runCatching { c.errorStream?.use { String(it.readBytes()) } }.getOrNull().orEmpty()
+                    .replace(Regex("\\s+"), " ").take(200)
+                val msg = "$step: HTTP $code $body".trim()
+                if (code == 401 || code == 403) throw AuthException(msg)
+                throw HttpException(msg)
+            }
             return c.inputStream.use { it.readBytes() }
         } finally { c.disconnect() }
     }
@@ -70,26 +85,52 @@ class GarminApi(ctx: Context, private val repo: RunRepository) {
 
     /** 최근 [days]일의 러닝 중 아직 경로가 없는 것만 가져온다. */
     suspend fun importRuns(days: Long = 30): Result = withContext(Dispatchers.IO) {
+        try {
+            doImport(days).also { lastError = it.second }.first
+        } catch (e: Exception) {
+            lastError = e.message ?: e.javaClass.simpleName
+            throw e
+        }
+    }
+
+    /** 목록 응답이 배열이든 객체 안의 배열이든 꺼낸다. */
+    private fun activityArray(text: String): JSONArray {
+        val t = text.trim()
+        if (t.startsWith("[")) return JSONArray(t)
+        val o = JSONObject(t)
+        for (k in listOf("activities", "activityList", "results", "items", "data")) o.optJSONArray(k)?.let { return it }
+        o.keys().forEach { k -> o.optJSONArray(k)?.let { return it } }
+        throw IOException("activitylist: 알 수 없는 응답 형태 " + t.take(150))
+    }
+
+    private suspend fun doImport(days: Long): Pair<Result, String?> {
         val bearer = "Bearer " + token()
         val start = LocalDate.now().minusDays(days)
-        val q = "?start=0&limit=50&activityType=running&startDate=$start&endDate=${LocalDate.now()}"
-        val list = JSONArray(String(http("GET", SEARCH_PATH + q, bearer)))
+        val q = "?start=0&limit=50&startDate=$start&endDate=${LocalDate.now()}"
+        val list = activityArray(String(http("GET", SEARCH_PATH + q, bearer)))
         val existing = repo.all()
+        var firstErr: String? = null
         var imported = 0
         var latest: Long? = null
         for (i in 0 until list.length()) {
             val a = list.getJSONObject(i)
-            val type = a.optJSONObject("activityType")?.optString("typeKey").orEmpty()
-            if (type.isNotEmpty() && !type.contains("running")) continue
+            val type = (a.optJSONObject("activityType")?.optString("typeKey") ?: a.optString("activityType")).orEmpty()
+            if (type.isNotEmpty() && !type.contains("running") && !type.contains("run")) continue
             val actId = a.optLong("activityId").takeIf { it > 0 } ?: continue
             val listStart = parseGmt(a.optString("startTimeGMT"))
             if (listStart != null) latest = maxOf(latest ?: 0L, listStart)
             val id = "gc-$actId"
             if (repo.exists(id)) continue
 
-            val zip = http("GET", "$DOWNLOAD_PATH$actId", bearer, "application/zip, application/x-zip-compressed, application/octet-stream")
-            val fit = extractFit(zip) ?: continue
-            val act = runCatching { FitParser.parse(fit) }.getOrNull() ?: continue
+            val act = try {
+                val zip = http("GET", "$DOWNLOAD_PATH$actId", bearer, "application/zip, application/x-zip-compressed, application/octet-stream")
+                val fit = extractFit(zip) ?: throw IOException("download: ZIP 안에 .fit 없음")
+                FitParser.parse(fit)
+            } catch (e: Exception) {
+                if (e is AuthException) throw e
+                if (firstErr == null) firstErr = "$actId ${e.message ?: e.javaClass.simpleName}"
+                continue
+            }
             val (points, splits) = FitParser.toTrack(act.samples)
             val startMs = act.session?.startMs ?: listStart ?: points.firstOrNull()?.wallMs ?: continue
             val distM = act.session?.distM ?: act.samples.mapNotNull { it.distM }.maxOrNull() ?: a.optDouble("distance", 0.0)
@@ -106,7 +147,7 @@ class GarminApi(ctx: Context, private val repo: RunRepository) {
             existing.filter { it.id.startsWith("hc-") && abs(it.startWallMs - startMs) < 120_000 }.forEach { repo.delete(it.id) }
             imported++
         }
-        Result(imported, latest)
+        return Result(imported, latest) to firstErr
     }
 
     private fun parseGmt(s: String): Long? = runCatching {
