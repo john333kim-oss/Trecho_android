@@ -50,10 +50,7 @@ class GarminApi(ctx: Context, private val repo: RunRepository) {
             c.connectTimeout = 30_000; c.readTimeout = 30_000
             c.setRequestProperty("Authorization", auth)
             c.setRequestProperty("Accept", accept)
-            if (method == "POST") {
-                c.doOutput = true; c.setFixedLengthStreamingMode(0)
-                c.setRequestProperty("Content-Type", "application/json")
-            }
+            if (method == "POST") { c.doOutput = true; c.setFixedLengthStreamingMode(0) }
             val code = try { c.responseCode } catch (e: IOException) { throw IOException("$step: ${e.javaClass.simpleName} ${e.message}") }
             if (code !in 200..299) {
                 val body = runCatching { c.errorStream?.use { String(it.readBytes()) } }.getOrNull().orEmpty()
@@ -71,8 +68,13 @@ class GarminApi(ctx: Context, private val repo: RunRepository) {
         val cached = prefs.getString("token", null)
         if (cached != null && prefs.getLong("tokenExp", 0) - System.currentTimeMillis() > 3_600_000) return cached
         val key = apiKey.ifEmpty { throw AuthException("no key") }
-        val o = JSONObject(String(http("POST", TOKEN_PATH, "ApiKey $key")))
-        val t = o.optString("access_token").ifEmpty { o.optString("accessToken") }.ifEmpty { throw IOException("no token") }
+        // Garmin FAQ의 curl 예시처럼 본문 없이, Accept는 */* 로 보낸다(application/json이면 406)
+        val body = String(http("POST", TOKEN_PATH, "ApiKey $key", accept = "*/*")).trim()
+        val t = if (body.startsWith("{")) {
+            val o = JSONObject(body)
+            o.optString("access_token").ifEmpty { o.optString("accessToken") }.ifEmpty { o.optString("token") }
+        } else body.trim('"')
+        if (t.isEmpty() || t.contains(' ')) throw IOException("token: 알 수 없는 응답 " + body.take(80))
         val exp = jwtExpMs(t) ?: (System.currentTimeMillis() + 23 * 3_600_000L)
         prefs.edit().putString("token", t).putLong("tokenExp", exp).apply()
         return t
