@@ -14,6 +14,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -49,6 +51,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.RadioButton
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ColorScheme
@@ -93,6 +96,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.TemporalAdjusters
@@ -187,7 +191,7 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
                             onOpen = { overlay = Overlay.Detail(it) },
                             onGoRun = { tab = Tab.Run })
                         Tab.Run -> ReadyScreen(runs, onStart = { recording = true })
-                        Tab.You -> AccountScreen(runs, userName, onSettings = { overlay = Overlay.Settings })
+                        Tab.You -> AccountScreen(runs, userName, onOpen = { overlay = Overlay.Detail(it) }, onSettings = { overlay = Overlay.Settings })
                     }
                 }
             }
@@ -355,15 +359,37 @@ private fun ReadyScreen(runs: List<RunRecord>, onStart: () -> Unit) {
 // ---------------------------------------------------------------- 계정
 
 @Composable
-private fun AccountScreen(runs: List<RunRecord>, userName: String, onSettings: () -> Unit) {
+private fun AccountScreen(runs: List<RunRecord>, userName: String, onOpen: (String) -> Unit, onSettings: () -> Unit) {
     val l = LocalLang.current
     val bests = remember(runs) { personalBests(runs) }
+    var month by remember { mutableStateOf(YearMonth.now()) }
+    var picking by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Avatar(userName, 64.dp)
             Spacer(Modifier.width(16.dp))
             Text(userName.ifBlank { l.t("러너", "Runner") }, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
             IconButton(onClick = onSettings) { Icon(Icons.Filled.Settings, contentDescription = l.t("설정", "Settings")) }
+        }
+        WeeklyChart(runs)
+        Panel {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { month = month.minusMonths(1) }) { Text("‹", fontSize = 22.sp) }
+                Text(monthLabel(l, month), fontWeight = FontWeight.Bold, fontSize = 18.sp, textAlign = TextAlign.Center,
+                    modifier = Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).clickable { picking = true }.padding(vertical = 6.dp))
+                TextButton(onClick = { month = month.plusMonths(1) }, enabled = month < YearMonth.now()) { Text("›", fontSize = 22.sp) }
+            }
+            val monthRuns = runs.filter { YearMonth.from(localDate(it.startWallMs)) == month }.sortedByDescending { it.startWallMs }
+            RunCalendar(month, monthRuns)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Stat(l.t("거리", "Distance"), "${formatKm(monthRuns.sumOf { it.distM })} km")
+                Stat(l.t("시간", "Time"), formatDuration(monthRuns.sumOf { it.activeMs }))
+                Stat(l.t("러닝", "Runs"), "${monthRuns.size}")
+            }
+            if (monthRuns.isEmpty()) {
+                Text(l.t("이 달에는 기록이 없습니다.", "No runs this month."), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+            }
+            monthRuns.forEach { r -> RunRow(r) { onOpen(r.id) } }
         }
         Panel {
             Text(l.t("전체 기록", "All time"), style = MaterialTheme.typography.titleSmall)
@@ -384,6 +410,136 @@ private fun AccountScreen(runs: List<RunRecord>, userName: String, onSettings: (
         }
         OutlinedButton(onClick = onSettings, modifier = Modifier.fillMaxWidth()) { Text(l.t("설정", "Settings")) }
     }
+    if (picking) MonthPicker(month, firstYear = runs.minOfOrNull { localDate(it.startWallMs).year } ?: month.year,
+        onPick = { month = it; picking = false }, onDismiss = { picking = false })
+}
+
+private fun localDate(ms: Long): LocalDate = Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).toLocalDate()
+
+private fun monthLabel(l: Lang, m: YearMonth): String =
+    if (l == Lang.EN) m.format(DateTimeFormatter.ofPattern("MMMM yyyy", Locale.ENGLISH)) else "${m.year}년 ${m.monthValue}월"
+
+/** 최근 12주 주별 누적 거리 막대 그래프. 이번 주는 강조색. */
+@Composable
+private fun WeeklyChart(runs: List<RunRecord>) {
+    val l = LocalLang.current
+    val thisMonday = LocalDate.now().with(TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY))
+    val weeks = (11 downTo 0).map { thisMonday.minusWeeks(it.toLong()) }
+    val km = weeks.map { start ->
+        runs.filter { val d = localDate(it.startWallMs); !d.isBefore(start) && d.isBefore(start.plusWeeks(1)) }.sumOf { it.distM } / 1000.0
+    }
+    val max = (km.maxOrNull() ?: 0.0).coerceAtLeast(1.0)
+    Panel {
+        Text(l.t("주별 러닝 거리", "Weekly distance"), style = MaterialTheme.typography.titleSmall)
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(String.format(Locale.US, "%.1f", km.last()), fontSize = 30.sp, fontWeight = FontWeight.Bold)
+            Text(l.t(" km 이번 주", " km this week"), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 5.dp))
+        }
+        Text(l.t("12주 평균 ", "12-week avg ") + String.format(Locale.US, "%.1f km", km.average()),
+            color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+        Row(Modifier.fillMaxWidth().height(120.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
+            km.forEachIndexed { i, v ->
+                Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.Bottom, horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (v > 0) Text(if (v >= 10) "${v.toInt()}" else String.format(Locale.US, "%.1f", v), fontSize = 9.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                    Box(
+                        Modifier.fillMaxWidth().fillMaxHeight((v / max).toFloat().coerceIn(0.02f, 0.82f))
+                            .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+                            .background(if (i == km.lastIndex) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary.copy(alpha = if (v > 0) 1f else 0.25f))
+                    )
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            weeks.forEachIndexed { i, w ->
+                // 달이 바뀌는 주에만 월 표시
+                val show = i == 0 || w.monthValue != weeks[i - 1].monthValue
+                Text(if (show) (if (l == Lang.EN) w.month.getDisplayName(java.time.format.TextStyle.SHORT, Locale.ENGLISH) else "${w.monthValue}월") else "",
+                    fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false,
+                    modifier = Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+/** 월 달력. 러닝한 날은 강조색 동그라미, 오늘은 테두리. */
+@Composable
+private fun RunCalendar(month: YearMonth, monthRuns: List<RunRecord>) {
+    val l = LocalLang.current
+    val runDays = monthRuns.map { localDate(it.startWallMs).dayOfMonth }.toSet()
+    val today = LocalDate.now()
+    val heads = if (l == Lang.EN) listOf("M", "T", "W", "T", "F", "S", "S") else listOf("월", "화", "수", "목", "금", "토", "일")
+    val lead = month.atDay(1).dayOfWeek.value - 1 // 월요일 시작
+    val cells = lead + month.lengthOfMonth()
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth()) {
+            heads.forEach { Text(it, modifier = Modifier.weight(1f), textAlign = TextAlign.Center, fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
+        for (row in 0 until (cells + 6) / 7) {
+            Row(Modifier.fillMaxWidth()) {
+                for (col in 0 until 7) {
+                    val day = row * 7 + col - lead + 1
+                    Box(Modifier.weight(1f).height(40.dp), contentAlignment = Alignment.Center) {
+                        if (day in 1..month.lengthOfMonth()) {
+                            val ran = day in runDays
+                            val isToday = month.atDay(day) == today
+                            Box(
+                                Modifier.size(34.dp).clip(CircleShape)
+                                    .background(if (ran) MaterialTheme.colorScheme.secondary else Color.Transparent)
+                                    .then(if (isToday && !ran) Modifier.border(1.5.dp, MaterialTheme.colorScheme.primary, CircleShape) else Modifier),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text("$day", fontSize = 14.sp,
+                                    fontWeight = if (ran || isToday) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (ran) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onSurface)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 년·월 선택 창 */
+@Composable
+private fun MonthPicker(current: YearMonth, firstYear: Int, onPick: (YearMonth) -> Unit, onDismiss: () -> Unit) {
+    val l = LocalLang.current
+    val now = YearMonth.now()
+    var year by remember { mutableStateOf(current.year) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = { onPick(now) }) { Text(l.t("이번 달", "This month")) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(l.t("닫기", "Close")) } },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { year-- }, enabled = year > minOf(firstYear, now.year)) { Text("‹", fontSize = 22.sp) }
+                Text(if (l == Lang.EN) "$year" else "${year}년", modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+                TextButton(onClick = { year++ }, enabled = year < now.year) { Text("›", fontSize = 22.sp) }
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (r in 0 until 4) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (c in 0 until 3) {
+                        val m = r * 3 + c + 1
+                        val ym = YearMonth.of(year, m)
+                        val enabled = ym <= now
+                        val selected = ym == current
+                        OutlinedButton(
+                            onClick = { onPick(ym) }, enabled = enabled, modifier = Modifier.weight(1f),
+                            colors = if (selected) ButtonDefaults.outlinedButtonColors(containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary) else ButtonDefaults.outlinedButtonColors(),
+                        ) {
+                            Text(if (l == Lang.EN) java.time.Month.of(m).getDisplayName(java.time.format.TextStyle.SHORT, Locale.ENGLISH) else "${m}월",
+                                maxLines = 1, softWrap = false)
+                        }
+                    }
+                }
+            }
+        },
+    )
 }
 
 @Composable
