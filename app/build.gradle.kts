@@ -15,7 +15,7 @@ plugins {
 
 android {
     namespace = "app.trecho.run"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "app.trecho.run"
