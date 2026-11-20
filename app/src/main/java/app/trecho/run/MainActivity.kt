@@ -65,6 +65,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -195,6 +196,15 @@ private fun HomeScreen(runs: List<RunRecord>, onStart: () -> Unit, onOpen: (Stri
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         items(runs, key = { it.id }) { r -> RunRow(r) { onOpen(r.id) } }
+        item {
+            Text(
+                "Build by 김기룡, 김찬종",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 8.dp),
+            )
+        }
     }
 }
 
@@ -256,7 +266,7 @@ private fun RecordScreen(repo: RunRepository, settings: Settings, onFinished: (S
     if (permissionDenied) {
         Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("위치 권한이 필요합니다", style = MaterialTheme.typography.titleLarge)
-            Text("거리와 경로를 재려면 '정확한 위치' 권한을 허용해 주세요. 휴대폰 설정 > 애플리케이션 > Trecho > 권한에서 바꿀 수 있습니다.")
+            Text("거리와 경로를 재려면 '정확한 위치' 권한을 허용해 주세요. 휴대폰 설정 > 애플리케이션 > RunKKRun > 권한에서 바꿀 수 있습니다.")
             Button(onClick = {
                 ctx.startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + ctx.packageName)))
             }) { Text("설정 열기") }
@@ -458,8 +468,9 @@ private fun SettingsScreen(settings: Settings, onBack: () -> Unit) {
 @Composable
 private fun Wordmark(modifier: Modifier = Modifier) {
     Row(modifier) {
-        Text("Trech", fontSize = 30.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic)
-        Text("o", fontSize = 30.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic, color = MaterialTheme.colorScheme.secondary)
+        Text("Run", fontSize = 30.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic)
+        Text("KK", fontSize = 30.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic, color = MaterialTheme.colorScheme.secondary)
+        Text("Run", fontSize = 30.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic)
     }
 }
 

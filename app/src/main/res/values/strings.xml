@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Trecho</string>
+    <string name="app_name">RunKKRun</string>
     <string name="notif_channel">러닝 기록</string>
     <string name="notif_running">러닝 기록 중</string>
     <string name="notif_paused">일시정지됨</string>

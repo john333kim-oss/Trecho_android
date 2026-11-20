@@ -81,7 +81,7 @@ fun personalBests(runs: List<RunRecord>): List<BestEffort> =
 fun toGpx(run: RunRecord, name: String = "Run"): String {
     val sb = StringBuilder()
     sb.append("""<?xml version="1.0" encoding="UTF-8"?>""").append('\n')
-    sb.append("""<gpx version="1.1" creator="Trecho" xmlns="http://www.topografix.com/GPX/1/1">""").append('\n')
+    sb.append("""<gpx version="1.1" creator="RunKKRun" xmlns="http://www.topografix.com/GPX/1/1">""").append('\n')
     sb.append("<trk><name>").append(escapeXml(name)).append("</name><type>running</type><trkseg>\n")
     for (p in run.points) {
         sb.append(String.format(Locale.US, "<trkpt lat=\"%.7f\" lon=\"%.7f\">", p.lat, p.lon))
