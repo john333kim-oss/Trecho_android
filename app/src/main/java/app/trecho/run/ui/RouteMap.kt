@@ -11,7 +11,7 @@ import app.trecho.run.core.TrackPoint
  * 없으면 OpenStreetMap 지도를 쓴다. 키가 없어도 빌드·실행은 된다.
  */
 @Composable
-fun RouteMap(points: List<TrackPoint>, follow: Boolean, lineColor: Color, modifier: Modifier = Modifier) {
-    if (BuildConfig.HAS_MAPS_KEY) GoogleRouteMap(points, follow, lineColor, modifier)
-    else OsmRouteMap(points, follow, lineColor, modifier)
+fun RouteMap(points: List<TrackPoint>, follow: Boolean, lineColor: Color, modifier: Modifier = Modifier, interactive: Boolean = true) {
+    if (BuildConfig.HAS_MAPS_KEY) GoogleRouteMap(points, follow, lineColor, modifier, interactive)
+    else OsmRouteMap(points, follow, lineColor, modifier, interactive)
 }

@@ -29,7 +29,7 @@ import java.io.File
  * 참고: OSM 기본 타일 서버는 개인·소량 사용만 허용한다. 서비스로 배포할 때는 상용 타일 제공자로 바꿔야 한다.
  */
 @Composable
-fun OsmRouteMap(points: List<TrackPoint>, follow: Boolean, lineColor: Color, modifier: Modifier = Modifier) {
+fun OsmRouteMap(points: List<TrackPoint>, follow: Boolean, lineColor: Color, modifier: Modifier = Modifier, interactive: Boolean = true) {
     val ctx = LocalContext.current
     val mapView = remember {
         Configuration.getInstance().apply {
@@ -39,7 +39,7 @@ fun OsmRouteMap(points: List<TrackPoint>, follow: Boolean, lineColor: Color, mod
         }
         MapView(ctx).apply {
             setTileSource(TileSourceFactory.MAPNIK)
-            setMultiTouchControls(true)
+            setMultiTouchControls(interactive)
             zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
             controller.setZoom(16.5)
             isTilesScaledToDpi = true

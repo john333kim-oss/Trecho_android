@@ -36,6 +36,19 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.RadioButton
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ColorScheme
@@ -104,11 +117,24 @@ private val DarkColors = darkColorScheme(
     onSurfaceVariant = Color(0xFF9AA8A3), outline = Color(0xFF2A3632),
 )
 
-private sealed interface Screen {
-    data object Home : Screen
-    data object Record : Screen
-    data class Detail(val id: String) : Screen
-    data object Settings : Screen
+enum class Lang { KO, EN }
+
+/** 화면 언어. 설정에서 바꾸면 앱 전체가 바로 바뀐다. */
+val LocalLang = staticCompositionLocalOf { Lang.KO }
+
+fun Lang.t(ko: String, en: String): String = if (this == Lang.EN) en else ko
+
+private fun bestLabel(l: Lang, label: String) = when (label) {
+    "하프" -> l.t("하프", "Half")
+    "풀" -> l.t("풀", "Full")
+    else -> label
+}
+
+private enum class Tab { Home, Run, You }
+
+private sealed interface Overlay {
+    data class Detail(val id: String) : Overlay
+    data object Settings : Overlay
 }
 
 class MainActivity : ComponentActivity() {
@@ -118,9 +144,12 @@ class MainActivity : ComponentActivity() {
         val repo = RunRepository(applicationContext)
         val settings = Settings(applicationContext)
         setContent {
-            MaterialTheme(colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors) {
-                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    App(repo, settings)
+            var lang by remember { mutableStateOf(if (settings.language == "en") Lang.EN else Lang.KO) }
+            CompositionLocalProvider(LocalLang provides lang) {
+                MaterialTheme(colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors) {
+                    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                        App(repo, settings, onLang = { lang = it; settings.language = if (it == Lang.EN) "en" else "ko" })
+                    }
                 }
             }
         }
@@ -128,25 +157,55 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun App(repo: RunRepository, settings: Settings) {
-    var screen by remember { mutableStateOf<Screen>(if (RunSession.isActive) Screen.Record else Screen.Home) }
+private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit) {
+    val l = LocalLang.current
+    var tab by remember { mutableStateOf(Tab.Home) }
+    var overlay by remember { mutableStateOf<Overlay?>(null) }
+    var recording by remember { mutableStateOf(RunSession.isActive) }
     var runs by remember { mutableStateOf<List<RunRecord>>(emptyList()) }
     var reload by remember { mutableStateOf(0) }
+    var userName by remember { mutableStateOf(settings.userName) }
     LaunchedEffect(reload) { runs = repo.all() }
 
-    BackHandler(enabled = screen is Screen.Detail || screen is Screen.Settings) { screen = Screen.Home }
+    BackHandler(enabled = !recording && (overlay != null || tab != Tab.Home)) {
+        if (overlay != null) overlay = null else tab = Tab.Home
+    }
 
     Box(Modifier.fillMaxSize().safeDrawingPadding()) {
-        when (val s = screen) {
-            Screen.Home -> HomeScreen(runs,
-                onStart = { screen = Screen.Record },
-                onOpen = { screen = Screen.Detail(it) },
-                onSettings = { screen = Screen.Settings })
-            Screen.Record -> RecordScreen(repo, settings,
-                onFinished = { id -> reload++; screen = if (id != null) Screen.Detail(id) else Screen.Home })
-            is Screen.Detail -> DetailScreen(s.id, repo, settings, runs,
-                onBack = { reload++; screen = Screen.Home })
-            Screen.Settings -> SettingsScreen(settings, onBack = { screen = Screen.Home })
+        if (recording) {
+            RecordScreen(repo, settings, onFinished = { id ->
+                recording = false; reload++
+                if (id != null) overlay = Overlay.Detail(id) else tab = Tab.Home
+            })
+        } else Column(Modifier.fillMaxSize()) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                when (val o = overlay) {
+                    is Overlay.Detail -> DetailScreen(o.id, repo, settings, runs, onBack = { reload++; overlay = null })
+                    Overlay.Settings -> SettingsScreen(settings, onLang, onBack = { userName = settings.userName; overlay = null })
+                    null -> when (tab) {
+                        Tab.Home -> HomeScreen(runs, userName,
+                            onOpen = { overlay = Overlay.Detail(it) },
+                            onGoRun = { tab = Tab.Run })
+                        Tab.Run -> ReadyScreen(runs, onStart = { recording = true })
+                        Tab.You -> AccountScreen(runs, userName, onSettings = { overlay = Overlay.Settings })
+                    }
+                }
+            }
+            NavigationBar(windowInsets = WindowInsets(0, 0, 0, 0)) {
+                val items = listOf(
+                    Triple(Tab.Home, Icons.Filled.Home, l.t("홈", "Home")),
+                    Triple(Tab.Run, Icons.Filled.PlayArrow, l.t("러닝", "Run")),
+                    Triple(Tab.You, Icons.Filled.AccountCircle, l.t("계정", "Account")),
+                )
+                items.forEach { (t, icon, label) ->
+                    NavigationBarItem(
+                        selected = overlay == null && tab == t,
+                        onClick = { overlay = null; tab = t },
+                        icon = { Icon(icon, contentDescription = label) },
+                        label = { Text(label) },
+                    )
+                }
+            }
         }
     }
 }
@@ -154,73 +213,187 @@ private fun App(repo: RunRepository, settings: Settings) {
 // ---------------------------------------------------------------- 홈
 
 @Composable
-private fun HomeScreen(runs: List<RunRecord>, onStart: () -> Unit, onOpen: (String) -> Unit, onSettings: () -> Unit) {
+private fun HomeScreen(runs: List<RunRecord>, userName: String, onOpen: (String) -> Unit, onGoRun: () -> Unit) {
+    val l = LocalLang.current
     val zone = ZoneId.systemDefault()
     val monday = LocalDate.now().with(TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY))
     val weekRuns = runs.filter { Instant.ofEpochMilli(it.startWallMs).atZone(zone).toLocalDate() >= monday }
     val bests = remember(runs) { personalBests(runs) }
+    val latest = runs.maxByOrNull { it.startWallMs }
 
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Wordmark(Modifier.weight(1f))
-                TextButton(onClick = onSettings) { Text("설정") }
-            }
-        }
-        item {
-            Panel {
-                Text("이번 주", style = MaterialTheme.typography.titleSmall)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Stat("거리", "${formatKm(weekRuns.sumOf { it.distM })} km")
-                    Stat("시간", formatDuration(weekRuns.sumOf { it.activeMs }))
-                    Stat("러닝", "${weekRuns.size}회")
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Wordmark(Modifier.padding(horizontal = 16.dp)) }
+        if (latest != null) {
+            item { LatestRunCard(latest, userName) { onOpen(latest.id) } }
+        } else item {
+            Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(l.t("아직 기록이 없습니다. 첫 러닝을 시작해 보세요.", "No runs yet. Start your first run."),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Button(onClick = onGoRun, modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(28.dp)) {
+                    Text(l.t("러닝 시작", "Start a run"), fontWeight = FontWeight.Bold)
                 }
             }
         }
         item {
-            Button(onClick = onStart, modifier = Modifier.fillMaxWidth().height(72.dp), shape = RoundedCornerShape(36.dp)) {
-                Text("러닝 시작", fontSize = 22.sp, fontWeight = FontWeight.Black)
+            Box(Modifier.padding(horizontal = 16.dp)) {
+                Panel {
+                    Text(l.t("이번 주", "This week"), style = MaterialTheme.typography.titleSmall)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Stat(l.t("거리", "Distance"), "${formatKm(weekRuns.sumOf { it.distM })} km")
+                        Stat(l.t("시간", "Time"), formatDuration(weekRuns.sumOf { it.activeMs }))
+                        Stat(l.t("러닝", "Runs"), "${weekRuns.size}")
+                    }
+                }
             }
         }
         if (bests.isNotEmpty()) item {
-            Panel {
-                Text("최고기록", style = MaterialTheme.typography.titleSmall)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    bests.take(4).forEach { b -> Stat(b.label, formatDuration(b.ms)) }
+            Box(Modifier.padding(horizontal = 16.dp)) {
+                Panel {
+                    Text(l.t("최고기록", "Best efforts"), style = MaterialTheme.typography.titleSmall)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        bests.take(4).forEach { b -> Stat(bestLabel(l, b.label), formatDuration(b.ms)) }
+                    }
                 }
             }
         }
-        item { Text("기록", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp)) }
-        if (runs.isEmpty()) item {
-            Text("아직 기록이 없습니다. 밖에서 '러닝 시작'을 눌러 첫 기록을 남겨 보세요.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (runs.size > 1) {
+            item {
+                Text(l.t("기록", "Activities"), style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(start = 16.dp, top = 8.dp))
+            }
+            items(runs.filter { it.id != latest?.id }, key = { it.id }) { r ->
+                Box(Modifier.padding(horizontal = 16.dp)) { RunRow(r) { onOpen(r.id) } }
+            }
         }
-        items(runs, key = { it.id }) { r -> RunRow(r) { onOpen(r.id) } }
         item {
             Text(
-                "Build by 김기룡, 김찬종",
-                fontSize = 11.sp,
+                "Build by 김기룡",
+                fontSize = 13.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 8.dp),
+                textAlign = TextAlign.End,
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 8.dp),
             )
+        }
+    }
+}
+
+/** 마지막 러닝: 머리글 → 지도 → 거리·페이스·시간 */
+@Composable
+private fun LatestRunCard(r: RunRecord, userName: String, onClick: () -> Unit) {
+    val l = LocalLang.current
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).clickable(onClick = onClick)) {
+        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Avatar(userName, 44.dp)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(r.title ?: l.t("최근 러닝", "Latest run"), fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                Text(dateLabel(l, r.startWallMs), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            }
+        }
+        if (r.points.size >= 2) {
+            Box(Modifier.fillMaxWidth().height(240.dp)) {
+                RouteMap(r.points, follow = false, lineColor = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.fillMaxSize(), interactive = false)
+                // 지도 위 터치는 카드 열기로 쓰고, 목록 스크롤은 막지 않는다
+                Box(Modifier.fillMaxSize().clickable(onClick = onClick))
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            Stat(l.t("거리", "Distance"), "${formatKm(r.distM)} km", big = true)
+            Stat(l.t("페이스", "Pace"), "${formatPace(r.avgPaceSecPerKm)} /km", big = true)
+            Stat(l.t("시간", "Time"), formatDuration(r.activeMs), big = true)
         }
     }
 }
 
 @Composable
 private fun RunRow(r: RunRecord, onClick: () -> Unit) {
+    val l = LocalLang.current
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surface)
             .clickable(onClick = onClick).padding(14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(r.title ?: dateLabel(r.startWallMs), fontWeight = FontWeight.Bold)
-            Text("${formatDuration(r.activeMs)} · ${formatPace(r.avgPaceSecPerKm)}/km" + if (r.uploaded) " · 전송됨" else "",
+            Text(r.title ?: dateLabel(l, r.startWallMs), fontWeight = FontWeight.Bold)
+            Text("${formatDuration(r.activeMs)} · ${formatPace(r.avgPaceSecPerKm)}/km" + if (r.uploaded) l.t(" · 전송됨", " · Sent") else "",
                 color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
         }
         Text("${formatKm(r.distM)} km", fontWeight = FontWeight.Black, fontSize = 18.sp)
+    }
+}
+
+// ---------------------------------------------------------------- 러닝 탭 (시작 전)
+
+@Composable
+private fun ReadyScreen(runs: List<RunRecord>, onStart: () -> Unit) {
+    val l = LocalLang.current
+    Column(
+        Modifier.fillMaxSize().padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Spacer(Modifier.height(24.dp))
+            Text(l.t("러닝", "Run"), fontSize = 34.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic)
+            Text(l.t("밖으로 나가 GPS가 잡히면 시작하세요.", "Head outside and start once GPS is ready."),
+                color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        }
+        Button(
+            onClick = onStart,
+            modifier = Modifier.size(180.dp),
+            shape = CircleShape,
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+        ) { Text(l.t("시작", "START"), fontSize = 30.sp, fontWeight = FontWeight.Black) }
+        Text(
+            l.t("총 ${runs.size}회 · ${formatKm(runs.sumOf { it.distM })} km", "${runs.size} runs · ${formatKm(runs.sumOf { it.distM })} km total"),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+// ---------------------------------------------------------------- 계정
+
+@Composable
+private fun AccountScreen(runs: List<RunRecord>, userName: String, onSettings: () -> Unit) {
+    val l = LocalLang.current
+    val bests = remember(runs) { personalBests(runs) }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Avatar(userName, 64.dp)
+            Spacer(Modifier.width(16.dp))
+            Text(userName.ifBlank { l.t("러너", "Runner") }, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            IconButton(onClick = onSettings) { Icon(Icons.Filled.Settings, contentDescription = l.t("설정", "Settings")) }
+        }
+        Panel {
+            Text(l.t("전체 기록", "All time"), style = MaterialTheme.typography.titleSmall)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Stat(l.t("거리", "Distance"), "${formatKm(runs.sumOf { it.distM })} km")
+                Stat(l.t("시간", "Time"), formatDuration(runs.sumOf { it.activeMs }))
+                Stat(l.t("러닝", "Runs"), "${runs.size}")
+            }
+        }
+        if (bests.isNotEmpty()) Panel {
+            Text(l.t("최고기록", "Best efforts"), style = MaterialTheme.typography.titleSmall)
+            bests.forEach { b ->
+                Row(Modifier.fillMaxWidth()) {
+                    Text(bestLabel(l, b.label), modifier = Modifier.weight(1f))
+                    Text(formatDuration(b.ms), fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        OutlinedButton(onClick = onSettings, modifier = Modifier.fillMaxWidth()) { Text(l.t("설정", "Settings")) }
+    }
+}
+
+@Composable
+private fun Avatar(name: String, size: androidx.compose.ui.unit.Dp) {
+    Box(
+        Modifier.size(size).clip(CircleShape).background(MaterialTheme.colorScheme.primary),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(name.trim().take(1).ifBlank { "R" }, color = MaterialTheme.colorScheme.onPrimary,
+            fontWeight = FontWeight.Bold, fontSize = (size.value * 0.42f).sp)
     }
 }
 
@@ -228,6 +401,7 @@ private fun RunRow(r: RunRecord, onClick: () -> Unit) {
 
 @Composable
 private fun RecordScreen(repo: RunRepository, settings: Settings, onFinished: (String?) -> Unit) {
+    val l = LocalLang.current
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val snap by RunSession.snapshot.collectAsState()
@@ -265,12 +439,13 @@ private fun RecordScreen(repo: RunRepository, settings: Settings, onFinished: (S
 
     if (permissionDenied) {
         Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("위치 권한이 필요합니다", style = MaterialTheme.typography.titleLarge)
-            Text("거리와 경로를 재려면 '정확한 위치' 권한을 허용해 주세요. 휴대폰 설정 > 애플리케이션 > RunKKRun > 권한에서 바꿀 수 있습니다.")
+            Text(l.t("위치 권한이 필요합니다", "Location permission needed"), style = MaterialTheme.typography.titleLarge)
+            Text(l.t("거리와 경로를 재려면 '정확한 위치' 권한을 허용해 주세요. 휴대폰 설정 > 애플리케이션 > RunKKRun > 권한에서 바꿀 수 있습니다.",
+                "Allow 'Precise location' to measure distance and route. You can change it in Settings > Apps > RunKKRun > Permissions."))
             Button(onClick = {
                 ctx.startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + ctx.packageName)))
-            }) { Text("설정 열기") }
-            OutlinedButton(onClick = { onFinished(null) }) { Text("돌아가기") }
+            }) { Text(l.t("설정 열기", "Open settings")) }
+            OutlinedButton(onClick = { onFinished(null) }) { Text(l.t("돌아가기", "Back")) }
         }
         return
     }
@@ -287,18 +462,18 @@ private fun RecordScreen(repo: RunRepository, settings: Settings, onFinished: (S
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
                 Text(formatKm(s?.distM ?: 0.0), fontSize = 76.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic)
-                Text("킬로미터", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(l.t("킬로미터", "kilometers"), color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Stat("시간", formatDuration(s?.activeMs ?: 0), big = true)
-                Stat("현재 페이스", formatPace(s?.currentPaceSecPerKm), big = true)
+                Stat(l.t("시간", "Time"), formatDuration(s?.activeMs ?: 0), big = true)
+                Stat(l.t("현재 페이스", "Current pace"), formatPace(s?.currentPaceSecPerKm), big = true)
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Stat("평균 페이스", formatPace(s?.avgPaceSecPerKm), big = true)
-                Stat("케이던스", s?.cadenceSpm?.let { "$it spm" } ?: "--", big = true)
+                Stat(l.t("평균 페이스", "Avg pace"), formatPace(s?.avgPaceSecPerKm), big = true)
+                Stat(l.t("케이던스", "Cadence"), s?.cadenceSpm?.let { "$it spm" } ?: "--", big = true)
             }
             s?.splits?.lastOrNull()?.let {
-                Text("${it.index}km 구간 ${formatPace(it.paceSecPerKm)}/km", color = MaterialTheme.colorScheme.secondary,
+                Text(l.t("${it.index}km 구간 ${formatPace(it.paceSecPerKm)}/km", "Km ${it.index} split ${formatPace(it.paceSecPerKm)}/km"), color = MaterialTheme.colorScheme.secondary,
                     fontWeight = FontWeight.Bold, modifier = Modifier.fillMaxWidth())
             }
             if (!confirmStop) {
@@ -307,19 +482,19 @@ private fun RecordScreen(repo: RunRepository, settings: Settings, onFinished: (S
                     Button(
                         onClick = { RunService.send(ctx, if (paused) RunService.ACTION_RESUME else RunService.ACTION_PAUSE) },
                         modifier = Modifier.weight(1f).height(64.dp), shape = RoundedCornerShape(32.dp),
-                    ) { Text(if (paused) "다시 시작" else "일시정지", fontSize = 18.sp, fontWeight = FontWeight.Bold) }
+                    ) { Text(if (paused) l.t("다시 시작", "Resume") else l.t("일시정지", "Pause"), fontSize = 18.sp, fontWeight = FontWeight.Bold) }
                     OutlinedButton(onClick = { confirmStop = true }, modifier = Modifier.weight(1f).height(64.dp),
-                        shape = RoundedCornerShape(32.dp)) { Text("끝내기", fontSize = 18.sp) }
+                        shape = RoundedCornerShape(32.dp)) { Text(l.t("끝내기", "Finish"), fontSize = 18.sp) }
                 }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { finish(true) }, modifier = Modifier.fillMaxWidth().height(56.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) {
-                        Text("저장하고 끝내기", fontWeight = FontWeight.Bold)
+                        Text(l.t("저장하고 끝내기", "Save and finish"), fontWeight = FontWeight.Bold)
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { confirmStop = false }, modifier = Modifier.weight(1f)) { Text("계속 달리기") }
-                        TextButton(onClick = { finish(false) }, modifier = Modifier.weight(1f)) { Text("기록 버리기") }
+                        OutlinedButton(onClick = { confirmStop = false }, modifier = Modifier.weight(1f)) { Text(l.t("계속 달리기", "Keep running")) }
+                        TextButton(onClick = { finish(false) }, modifier = Modifier.weight(1f)) { Text(l.t("기록 버리기", "Discard")) }
                     }
                 }
             }
@@ -337,7 +512,7 @@ private fun GpsChip(ok: Boolean, modifier: Modifier) {
     ) {
         Box(Modifier.size(8.dp).clip(CircleShape).background(if (ok) Color(0xFF1F8A5B) else MaterialTheme.colorScheme.secondary))
         Spacer(Modifier.width(6.dp))
-        Text(if (ok) "GPS 양호" else "GPS 찾는 중", fontSize = 12.sp)
+        Text(if (ok) LocalLang.current.t("GPS 양호", "GPS good") else LocalLang.current.t("GPS 찾는 중", "Finding GPS"), fontSize = 12.sp)
     }
 }
 
@@ -345,6 +520,7 @@ private fun GpsChip(ok: Boolean, modifier: Modifier) {
 
 @Composable
 private fun DetailScreen(id: String, repo: RunRepository, settings: Settings, all: List<RunRecord>, onBack: () -> Unit) {
+    val l = LocalLang.current
     val scope = rememberCoroutineScope()
     var run by remember { mutableStateOf<RunRecord?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -355,9 +531,9 @@ private fun DetailScreen(id: String, repo: RunRepository, settings: Settings, al
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("‹ 목록") }
+            TextButton(onClick = onBack) { Text(l.t("‹ 뒤로", "‹ Back")) }
             Spacer(Modifier.weight(1f))
-            Text(dateLabel(r.startWallMs), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 12.dp))
+            Text(dateLabel(l, r.startWallMs), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 12.dp))
         }
         if (r.points.isNotEmpty()) {
             RouteMap(r.points, follow = false, lineColor = MaterialTheme.colorScheme.secondary,
@@ -370,23 +546,23 @@ private fun DetailScreen(id: String, repo: RunRepository, settings: Settings, al
             }
             Panel {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Stat("시간", formatDuration(r.activeMs))
-                    Stat("평균 페이스", formatPace(r.avgPaceSecPerKm))
-                    Stat("케이던스", r.cadenceSpm?.let { "$it" } ?: "--")
+                    Stat(l.t("시간", "Time"), formatDuration(r.activeMs))
+                    Stat(l.t("평균 페이스", "Avg pace"), formatPace(r.avgPaceSecPerKm))
+                    Stat(l.t("케이던스", "Cadence"), r.cadenceSpm?.let { "$it" } ?: "--")
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Stat("상승 고도", "${r.elevationGainM.toInt()} m")
-                    Stat("걸음", "${r.steps}")
-                    Stat("보폭", String.format(Locale.US, "%.2f m", r.strideM))
+                    Stat(l.t("상승 고도", "Elev. gain"), "${r.elevationGainM.toInt()} m")
+                    Stat(l.t("걸음", "Steps"), "${r.steps}")
+                    Stat(l.t("보폭", "Stride"), String.format(Locale.US, "%.2f m", r.strideM))
                 }
             }
             if (bests.isNotEmpty()) {
-                Text("이번 러닝이 최고기록: " + bests.joinToString { "${it.label} ${formatDuration(it.ms)}" },
+                Text(l.t("이번 러닝이 최고기록: ", "New best: ") + bests.joinToString { "${bestLabel(l, it.label)} ${formatDuration(it.ms)}" },
                     color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold)
             }
             if (r.splits.isNotEmpty()) {
                 Panel {
-                    Text("구간별 페이스", style = MaterialTheme.typography.titleSmall)
+                    Text(l.t("구간별 페이스", "Splits"), style = MaterialTheme.typography.titleSmall)
                     val fastest = r.splits.filter { it.distM >= 500 }.minOfOrNull { it.paceSecPerKm } ?: 0.0
                     val slowest = r.splits.maxOf { it.paceSecPerKm }
                     r.splits.forEach { sp ->
@@ -407,23 +583,23 @@ private fun DetailScreen(id: String, repo: RunRepository, settings: Settings, al
             message?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             if (!r.uploaded) {
                 Button(onClick = {
-                    if (settings.serverBase.isBlank()) { message = "설정에서 서버 주소를 먼저 넣어 주세요."; return@Button }
-                    message = "보내는 중…"
+                    if (settings.serverBase.isBlank()) { message = l.t("설정에서 서버 주소를 먼저 넣어 주세요.", "Set the server address in Settings first."); return@Button }
+                    message = l.t("보내는 중…", "Sending…")
                     scope.launch {
                         message = repo.upload(r, settings.serverBase).fold(
-                            onSuccess = { run = r.copy(uploaded = true); "서버로 보냈어요: $it" },
-                            onFailure = { "보내지 못했어요: ${it.message}" })
+                            onSuccess = { run = r.copy(uploaded = true); l.t("서버로 보냈어요: $it", "Sent to server: $it") },
+                            onFailure = { l.t("보내지 못했어요: ${it.message}", "Couldn't send: ${it.message}") })
                     }
-                }, modifier = Modifier.fillMaxWidth()) { Text("Claude 연결 서버로 보내기") }
+                }, modifier = Modifier.fillMaxWidth()) { Text(l.t("Claude 연결 서버로 보내기", "Send to Claude server")) }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outline)
             if (!confirmDelete) {
-                TextButton(onClick = { confirmDelete = true }) { Text("기록 삭제", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                TextButton(onClick = { confirmDelete = true }) { Text(l.t("기록 삭제", "Delete activity"), color = MaterialTheme.colorScheme.onSurfaceVariant) }
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { scope.launch { repo.delete(r.id); onBack() } },
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) { Text("정말 삭제") }
-                    OutlinedButton(onClick = { confirmDelete = false }) { Text("취소") }
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) { Text(l.t("정말 삭제", "Delete")) }
+                    OutlinedButton(onClick = { confirmDelete = false }) { Text(l.t("취소", "Cancel")) }
                 }
             }
         }
@@ -433,33 +609,55 @@ private fun DetailScreen(id: String, repo: RunRepository, settings: Settings, al
 // ---------------------------------------------------------------- 설정
 
 @Composable
-private fun SettingsScreen(settings: Settings, onBack: () -> Unit) {
+private fun SettingsScreen(settings: Settings, onLang: (Lang) -> Unit, onBack: () -> Unit) {
     val ctx = LocalContext.current
+    val l = LocalLang.current
     var server by remember { mutableStateOf(settings.serverBase) }
     var auto by remember { mutableStateOf(settings.autoUpload) }
+    var name by remember { mutableStateOf(settings.userName) }
+    fun saveAndBack() { settings.serverBase = server; settings.autoUpload = auto; settings.userName = name; onBack() }
+    BackHandler { saveAndBack() }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { settings.serverBase = server; settings.autoUpload = auto; onBack() }) { Text("‹ 저장하고 돌아가기") }
+            TextButton(onClick = { saveAndBack() }) { Text(l.t("‹ 저장하고 돌아가기", "‹ Save and back")) }
         }
-        Text("Claude 연결 서버", style = MaterialTheme.typography.titleMedium)
-        Text("PC에서 돌리는 기록 서버 주소입니다. 비밀 경로까지 넣으세요. 예: https://run.내도메인/<비밀경로>",
+        Text(l.t("언어", "Language"), style = MaterialTheme.typography.titleMedium)
+        listOf(Lang.KO to "한국어", Lang.EN to "English").forEach { (lang, label) ->
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { onLang(lang) }.padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(selected = l == lang, onClick = { onLang(lang) })
+                Text(label, fontSize = 16.sp)
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+        Text(l.t("이름", "Name"), style = MaterialTheme.typography.titleMedium)
+        OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+            label = { Text(l.t("홈·계정 화면에 표시", "Shown on Home and Account")) })
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+        Text(l.t("Claude 연결 서버", "Claude server"), style = MaterialTheme.typography.titleMedium)
+        Text(l.t("PC에서 돌리는 기록 서버 주소입니다. 비밀 경로까지 넣으세요. 예: https://run.내도메인/<비밀경로>",
+                "Address of your record server, including the secret path. e.g. https://run.example.com/<secret>"),
             color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
         OutlinedTextField(value = server, onValueChange = { server = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-            label = { Text("서버 주소") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+            label = { Text(l.t("서버 주소", "Server address")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("러닝이 끝나면 자동으로 보내기", modifier = Modifier.weight(1f))
+            Text(l.t("러닝이 끝나면 자동으로 보내기", "Send automatically after each run"), modifier = Modifier.weight(1f))
             Switch(checked = auto, onCheckedChange = { auto = it })
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-        Text("배터리 설정 (중요)", style = MaterialTheme.typography.titleMedium)
-        Text("갤럭시는 배터리 절약 때문에 화면이 꺼진 앱을 멈출 수 있습니다. 러닝 중 기록이 끊기지 않게 '배터리 > 제한 없음'으로 바꿔 주세요.",
+        Text(l.t("배터리 설정 (중요)", "Battery (important)"), style = MaterialTheme.typography.titleMedium)
+        Text(l.t("갤럭시는 배터리 절약 때문에 화면이 꺼진 앱을 멈출 수 있습니다. 러닝 중 기록이 끊기지 않게 '배터리 > 제한 없음'으로 바꿔 주세요.",
+                "Galaxy phones may stop apps when the screen is off. Set 'Battery > Unrestricted' so runs keep recording."),
             color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
         OutlinedButton(onClick = {
             ctx.startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + ctx.packageName)))
-        }) { Text("앱 설정 열기") }
+        }) { Text(l.t("앱 설정 열기", "Open app settings")) }
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-        Text("지도 © OpenStreetMap 기여자", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-        Text("개발 중인 비공개 프로토타입 ${BuildConfig.VERSION_NAME}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+        if (!BuildConfig.HAS_MAPS_KEY) Text(l.t("지도 © OpenStreetMap 기여자", "Map © OpenStreetMap contributors"),
+            color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+        Text("RunKKRun ${BuildConfig.VERSION_NAME}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
     }
 }
 
@@ -490,5 +688,7 @@ private fun Stat(label: String, value: String, big: Boolean = false) {
     }
 }
 
-private val DATE_FMT = DateTimeFormatter.ofPattern("M월 d일 (E) HH:mm", Locale.KOREAN)
-private fun dateLabel(ms: Long): String = Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).format(DATE_FMT)
+private val DATE_FMT_KO = DateTimeFormatter.ofPattern("M월 d일 (E) HH:mm", Locale.KOREAN)
+private val DATE_FMT_EN = DateTimeFormatter.ofPattern("MMM d, yyyy 'at' h:mm a", Locale.ENGLISH)
+private fun dateLabel(l: Lang, ms: Long): String =
+    Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).format(if (l == Lang.EN) DATE_FMT_EN else DATE_FMT_KO)

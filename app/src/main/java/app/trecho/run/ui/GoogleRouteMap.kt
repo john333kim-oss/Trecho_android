@@ -24,7 +24,7 @@ import com.google.maps.android.compose.rememberCameraPositionState
  * false면 전체 경로가 보이게 맞춘다(기록 상세).
  */
 @Composable
-fun GoogleRouteMap(points: List<TrackPoint>, follow: Boolean, lineColor: Color, modifier: Modifier = Modifier) {
+fun GoogleRouteMap(points: List<TrackPoint>, follow: Boolean, lineColor: Color, modifier: Modifier = Modifier, interactive: Boolean = true) {
     val camera = rememberCameraPositionState()
     var loaded by remember { mutableStateOf(false) }
     val latLngs = remember(points.size) { points.map { LatLng(it.lat, it.lon) } }
@@ -32,7 +32,11 @@ fun GoogleRouteMap(points: List<TrackPoint>, follow: Boolean, lineColor: Color, 
     GoogleMap(
         modifier = modifier,
         cameraPositionState = camera,
-        uiSettings = MapUiSettings(zoomControlsEnabled = false, mapToolbarEnabled = false, compassEnabled = false),
+        uiSettings = MapUiSettings(
+            zoomControlsEnabled = false, mapToolbarEnabled = false, compassEnabled = false,
+            scrollGesturesEnabled = interactive, zoomGesturesEnabled = interactive,
+            rotationGesturesEnabled = interactive, tiltGesturesEnabled = interactive,
+        ),
         onMapLoaded = { loaded = true },
     ) {
         if (latLngs.size >= 2) {

@@ -119,4 +119,11 @@ class Settings(ctx: Context) {
     var autoUpload: Boolean
         get() = prefs.getBoolean("autoUpload", true)
         set(v) = prefs.edit().putBoolean("autoUpload", v).apply()
+    /** 화면 언어: "ko" 또는 "en" */
+    var language: String
+        get() = prefs.getString("language", "ko") ?: "ko"
+        set(v) = prefs.edit().putString("language", v).apply()
+    var userName: String
+        get() = prefs.getString("userName", "").orEmpty()
+        set(v) = prefs.edit().putString("userName", v.trim()).apply()
 }
