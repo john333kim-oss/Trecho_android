@@ -1036,12 +1036,15 @@ private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (La
             label = { Text(l.t("API 키", "API key")) },
             visualTransformation = PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        val keyDirty = gKey.trim() != garminApi.apiKey
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Button(onClick = { saveAndBack() }, enabled = keyDirty) { Text(l.t("저장", "Save")) }
             OutlinedButton(onClick = {
                 runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GarminApi.KEY_PAGE))) }
             }) { Text(l.t("키 만들기 페이지", "Create key page")) }
-            if (gKey.isNotEmpty()) TextButton(onClick = { gKey = "" }) { Text(l.t("키 지우기", "Remove key")) }
+            if (gKey.isNotEmpty()) TextButton(onClick = { gKey = "" }) { Text(l.t("지우기", "Clear")) }
         }
+        if (!keyDirty && garminApi.hasKey) Text(l.t("✓ 키 저장됨", "✓ Key saved"), color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
         Text(l.t("Claude 연결 서버", "Claude server"), style = MaterialTheme.typography.titleMedium)
         Text(l.t("PC에서 돌리는 기록 서버 주소입니다. 비밀 경로까지 넣으세요. 예: https://run.내도메인/<비밀경로>",
