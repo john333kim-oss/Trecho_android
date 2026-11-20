@@ -12,28 +12,46 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
 
-/** 러닝 기록을 폰 내부 저장소(앱 전용 폴더)에 JSON 파일로 보관한다. */
+/**
+ * 러닝 기록을 폰 내부 저장소(앱 전용 폴더 files/runs)에 gzip 압축 JSON으로 보관한다.
+ * 이 폴더와 설정은 Android 자동 백업으로 Google 드라이브에 백업된다(앱당 25MB 한도라 압축해 둔다).
+ */
 class RunRepository(private val ctx: Context) {
     private val dir = File(ctx.filesDir, "runs").apply { mkdirs() }
 
+    private fun fileOf(id: String) = File(dir, "$id.json.gz")
+    private fun legacyOf(id: String) = File(dir, "$id.json")
+
+    private fun read(f: File): JSONObject =
+        JSONObject(if (f.name.endsWith(".gz")) GZIPInputStream(f.inputStream()).bufferedReader().use { it.readText() } else f.readText())
+
+    private fun write(r: RunRecord) {
+        val tmp = File(dir, "${r.id}.json.gz.tmp")
+        GZIPOutputStream(tmp.outputStream()).bufferedWriter().use { it.write(toJson(r).toString()) }
+        tmp.renameTo(fileOf(r.id))
+        legacyOf(r.id).delete()
+    }
+
     suspend fun all(): List<RunRecord> = withContext(Dispatchers.IO) {
-        dir.listFiles { f -> f.extension == "json" }.orEmpty()
-            .mapNotNull { runCatching { fromJson(JSONObject(it.readText())) }.getOrNull() }
+        // 예전 버전의 압축 안 된 파일은 읽으면서 압축 파일로 바꾼다
+        dir.listFiles { f -> f.name.endsWith(".json") }.orEmpty().forEach { f ->
+            runCatching { write(fromJson(read(f))) }
+        }
+        dir.listFiles { f -> f.name.endsWith(".json.gz") }.orEmpty()
+            .mapNotNull { runCatching { fromJson(read(it)) }.getOrNull() }
             .sortedByDescending { it.startWallMs }
     }
 
     suspend fun get(id: String): RunRecord? = withContext(Dispatchers.IO) {
-        File(dir, "$id.json").takeIf { it.exists() }?.let { fromJson(JSONObject(it.readText())) }
+        (fileOf(id).takeIf { it.exists() } ?: legacyOf(id).takeIf { it.exists() })?.let { fromJson(read(it)) }
     }
 
-    suspend fun save(r: RunRecord) = withContext(Dispatchers.IO) {
-        val tmp = File(dir, "${r.id}.json.tmp")
-        tmp.writeText(toJson(r).toString())
-        tmp.renameTo(File(dir, "${r.id}.json"))
-    }
+    suspend fun save(r: RunRecord) = withContext(Dispatchers.IO) { write(r) }
 
-    suspend fun delete(id: String) = withContext(Dispatchers.IO) { File(dir, "$id.json").delete() }
+    suspend fun delete(id: String) = withContext(Dispatchers.IO) { fileOf(id).delete(); legacyOf(id).delete() }
 
     /**
      * 설정한 서버(Claude 연결용 기록 서버)로 GPX를 보낸다. serverBase 예: https://run.example.com/<비밀경로>
@@ -76,7 +94,9 @@ class RunRepository(private val ctx: Context) {
         put("points", JSONArray().apply {
             r.points.forEach { p ->
                 put(JSONArray().apply {
-                    put(p.lat); put(p.lon); put(p.altM ?: JSONObject.NULL); put(p.wallMs); put(p.activeMs); put(p.distM)
+                    // 위경도 소수 6자리(약 0.1m), 고도·거리 0.1m로 줄여 저장 공간을 아낀다
+                    put(round(p.lat, 1e6)); put(round(p.lon, 1e6)); put(p.altM?.let { round(it, 10.0) } ?: JSONObject.NULL)
+                    put(p.wallMs); put(p.activeMs); put(round(p.distM, 10.0))
                 })
             }
         })
@@ -84,6 +104,8 @@ class RunRepository(private val ctx: Context) {
             r.splits.forEach { s -> put(JSONArray().apply { put(s.index); put(s.distM); put(s.durationMs) }) }
         })
     }
+
+    private fun round(v: Double, f: Double) = Math.round(v * f) / f
 
     private fun fromJson(o: JSONObject): RunRecord {
         val pts = o.getJSONArray("points")

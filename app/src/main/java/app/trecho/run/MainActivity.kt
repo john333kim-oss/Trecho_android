@@ -13,6 +13,15 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -419,43 +428,83 @@ private fun localDate(ms: Long): LocalDate = Instant.ofEpochMilli(ms).atZone(Zon
 private fun monthLabel(l: Lang, m: YearMonth): String =
     if (l == Lang.EN) m.format(DateTimeFormatter.ofPattern("MMMM yyyy", Locale.ENGLISH)) else "${m.year}년 ${m.monthValue}월"
 
-/** 최근 12주 주별 누적 거리 막대 그래프. 이번 주는 강조색. */
+/** 최근 12주 주별 누적 거리 영역 그래프. 점을 누르면 그 주의 거리·시간·상승 고도를 위에 보여준다. */
 @Composable
 private fun WeeklyChart(runs: List<RunRecord>) {
     val l = LocalLang.current
     val thisMonday = LocalDate.now().with(TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY))
     val weeks = (11 downTo 0).map { thisMonday.minusWeeks(it.toLong()) }
-    val km = weeks.map { start ->
-        runs.filter { val d = localDate(it.startWallMs); !d.isBefore(start) && d.isBefore(start.plusWeeks(1)) }.sumOf { it.distM } / 1000.0
+    val weekRuns = weeks.map { start ->
+        runs.filter { val d = localDate(it.startWallMs); !d.isBefore(start) && d.isBefore(start.plusWeeks(1)) }
     }
-    val max = (km.maxOrNull() ?: 0.0).coerceAtLeast(1.0)
+    val km = weekRuns.map { rs -> rs.sumOf { it.distM } / 1000.0 }
+    var sel by remember { mutableStateOf(weeks.lastIndex) }
+    // 축 눈금: 20km 단위로 올림
+    val top = (Math.ceil((km.maxOrNull() ?: 0.0).coerceAtLeast(1.0) / 20.0) * 20.0).coerceAtLeast(20.0)
+    val line = MaterialTheme.colorScheme.secondary
+    val grid = MaterialTheme.colorScheme.outline
+    val bg = MaterialTheme.colorScheme.surface
+    val marker = MaterialTheme.colorScheme.onSurface
+
     Panel {
-        Text(l.t("주별 러닝 거리", "Weekly distance"), style = MaterialTheme.typography.titleSmall)
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(String.format(Locale.US, "%.1f", km.last()), fontSize = 30.sp, fontWeight = FontWeight.Bold)
-            Text(l.t(" km 이번 주", " km this week"), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 5.dp))
+        val start = weeks[sel]; val end = start.plusDays(6)
+        val rangeFmt = if (l == Lang.EN) DateTimeFormatter.ofPattern("MMM d", Locale.ENGLISH) else DateTimeFormatter.ofPattern("M월 d일", Locale.KOREAN)
+        Text("${start.format(rangeFmt)} – ${end.format(rangeFmt)}, ${end.year}", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Stat(l.t("거리", "Distance"), String.format(Locale.US, "%.2f km", km[sel]))
+            Stat(l.t("시간", "Time"), formatDuration(weekRuns[sel].sumOf { it.activeMs }))
+            Stat(l.t("상승 고도", "Elev gain"), "${weekRuns[sel].sumOf { it.elevationGainM }.toInt()} m")
         }
-        Text(l.t("12주 평균 ", "12-week avg ") + String.format(Locale.US, "%.1f km", km.average()),
-            color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-        Row(Modifier.fillMaxWidth().height(120.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
-            km.forEachIndexed { i, v ->
-                Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.Bottom, horizontalAlignment = Alignment.CenterHorizontally) {
-                    if (v > 0) Text(if (v >= 10) "${v.toInt()}" else String.format(Locale.US, "%.1f", v), fontSize = 9.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                    Box(
-                        Modifier.fillMaxWidth().fillMaxHeight((v / max).toFloat().coerceIn(0.02f, 0.82f))
-                            .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
-                            .background(if (i == km.lastIndex) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary.copy(alpha = if (v > 0) 1f else 0.25f))
-                    )
+        Text(l.t("최근 12주", "Past 12 weeks"), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(Modifier.fillMaxWidth().height(150.dp)) {
+            Canvas(
+                Modifier.weight(1f).fillMaxHeight().pointerInput(km) {
+                    detectTapGestures { pos ->
+                        val step = size.width / (km.size - 1).toFloat()
+                        sel = ((pos.x / step) + 0.5f).toInt().coerceIn(0, km.lastIndex)
+                    }
+                }
+            ) {
+                val padY = 8.dp.toPx()
+                val h = size.height - padY * 2
+                val step = size.width / (km.size - 1)
+                fun x(i: Int) = i * step
+                fun y(v: Double) = padY + h - (v / top * h).toFloat()
+                // 가로 눈금선 (0, 절반, 최대)
+                listOf(0.0, top / 2, top).forEach { v ->
+                    drawLine(grid, Offset(0f, y(v)), Offset(size.width, y(v)), strokeWidth = 1.dp.toPx())
+                }
+                val path = Path().apply { km.forEachIndexed { i, v -> if (i == 0) moveTo(x(i), y(v)) else lineTo(x(i), y(v)) } }
+                val area = Path().apply {
+                    addPath(path); lineTo(x(km.lastIndex), y(0.0)); lineTo(x(0), y(0.0)); close()
+                }
+                drawPath(area, Brush.verticalGradient(listOf(line.copy(alpha = 0.55f), line.copy(alpha = 0.04f)), startY = padY, endY = padY + h))
+                drawPath(path, line, style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+                // 선택한 주 세로선
+                drawLine(marker, Offset(x(sel), padY), Offset(x(sel), y(0.0)), strokeWidth = 2.dp.toPx())
+                km.forEachIndexed { i, v ->
+                    val c = Offset(x(i), y(v))
+                    if (i == sel) {
+                        drawCircle(line.copy(alpha = 0.3f), radius = 11.dp.toPx(), center = c)
+                        drawCircle(line, radius = 6.dp.toPx(), center = c)
+                    } else {
+                        drawCircle(bg, radius = 4.5.dp.toPx(), center = c)
+                        drawCircle(line, radius = 4.5.dp.toPx(), center = c, style = Stroke(width = 2.dp.toPx()))
+                    }
+                }
+            }
+            Column(Modifier.width(52.dp).fillMaxHeight().padding(start = 8.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                listOf(top, top / 2, 0.0).forEach { v ->
+                    Text("${v.toInt()} km", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false)
                 }
             }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.fillMaxWidth().padding(end = 52.dp)) {
             weeks.forEachIndexed { i, w ->
                 // 달이 바뀌는 주에만 월 표시
                 val show = i == 0 || w.monthValue != weeks[i - 1].monthValue
-                Text(if (show) (if (l == Lang.EN) w.month.getDisplayName(java.time.format.TextStyle.SHORT, Locale.ENGLISH) else "${w.monthValue}월") else "",
-                    fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false,
+                Text(if (show) (if (l == Lang.EN) w.month.getDisplayName(java.time.format.TextStyle.SHORT, Locale.ENGLISH).uppercase() else "${w.monthValue}월") else "",
+                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, softWrap = false,
                     modifier = Modifier.weight(1f))
             }
         }

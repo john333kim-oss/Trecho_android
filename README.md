@@ -24,6 +24,11 @@
 3. GitHub 저장소 → Settings → Secrets and variables → Actions → New repository secret: 이름 `MAPS_API_KEY`, 값에 키를 붙여넣습니다.
 4. Actions에서 "Build APK"를 다시 실행(Run workflow)하면 Google 지도가 들어간 APK가 나옵니다. 키가 없으면 OpenStreetMap으로 빌드됩니다.
 
+## 백업
+- 러닝 기록(`files/runs`, gzip 압축)과 설정은 Android 자동 백업으로 Google 드라이브에 하루 1번쯤(충전 중·Wi-Fi·대기 상태일 때) 백업됩니다. 휴대폰 설정 → 계정 및 백업 → Google 드라이브 백업이 켜져 있어야 합니다.
+- 앱당 25MB 한도. 압축 저장으로 1시간 러닝 1개가 대략 수십 KB라 수백 개까지 들어갑니다(추정).
+- 사진·동영상은 이 백업과 무관합니다(Google 포토·Samsung Cloud 별도).
+
 ## 구조
 - `core/RunTracker.kt`: 측정 로직(안드로이드 의존성 없음, 단위 테스트 `RunTrackerTest`)
 - `core/RunMath.kt`: 최고기록, 포맷, GPX 변환
