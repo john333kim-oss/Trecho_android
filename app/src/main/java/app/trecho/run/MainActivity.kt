@@ -101,6 +101,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -195,20 +196,39 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val health = remember { HealthSync(ctx.applicationContext, repo) }
-    var garmin by remember { mutableStateOf(GarminUi(HealthSync.Status.UNAVAILABLE, settings.lastSyncMs, null, false)) }
+    val garminApi = remember { GarminApi(ctx.applicationContext, repo) }
+    var garmin by remember { mutableStateOf(GarminUi(HealthSync.Status.UNAVAILABLE, settings.lastSyncMs, null, false,
+        if (garminApi.hasKey) ApiState.OK else ApiState.OFF)) }
     fun syncGarmin() {
+        if (garmin.syncing) return
         scope.launch {
             val st = runCatching { health.status() }.getOrDefault(HealthSync.Status.UNAVAILABLE)
-            garmin = garmin.copy(status = st)
-            if (st != HealthSync.Status.CONNECTED) return@launch
+            garmin = garmin.copy(status = st, api = if (garminApi.hasKey) garmin.api.takeIf { it != ApiState.OFF } ?: ApiState.OK else ApiState.OFF)
+            if (st != HealthSync.Status.CONNECTED && !garminApi.hasKey) return@launch
             garmin = garmin.copy(syncing = true)
-            val res = runCatching { health.importRuns() }.getOrNull()
-            if (res != null) {
-                settings.lastSyncMs = System.currentTimeMillis()
-                garmin = garmin.copy(lastSyncMs = settings.lastSyncMs, latestGarminMs = res.latestGarminMs ?: garmin.latestGarminMs)
-                if (res.imported > 0) reload++
+            var changed = false
+            var latest = garmin.latestGarminMs
+            var ok = false
+            // 1) Personal API 키가 있으면 경로 포함 기록 먼저
+            if (garminApi.hasKey) {
+                val r = runCatching { garminApi.importRuns() }
+                garmin = garmin.copy(api = when (r.exceptionOrNull()) {
+                    null -> ApiState.OK
+                    is GarminApi.AuthException -> ApiState.KEY_ERROR
+                    else -> ApiState.NET_ERROR
+                })
+                r.getOrNull()?.let { ok = true; if (it.imported > 0) changed = true; it.latestMs?.let { m -> latest = maxOf(latest ?: 0L, m) } }
             }
-            garmin = garmin.copy(syncing = false)
+            // 2) Health Connect (경로 없음). API로 이미 받은 러닝은 건너뜀
+            if (st == HealthSync.Status.CONNECTED) {
+                runCatching { health.importRuns() }.getOrNull()?.let {
+                    ok = true; if (it.imported > 0) changed = true
+                    it.latestGarminMs?.let { m -> latest = maxOf(latest ?: 0L, m) }
+                }
+            }
+            if (ok) settings.lastSyncMs = System.currentTimeMillis()
+            garmin = garmin.copy(lastSyncMs = settings.lastSyncMs, latestGarminMs = latest, syncing = false)
+            if (changed) reload++
         }
     }
     val hcPermLauncher = rememberLauncherForActivityResult(PermissionController.createRequestPermissionResultContract()) { syncGarmin() }
@@ -219,6 +239,8 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
         onDispose { lifecycle.removeObserver(obs) }
     }
     fun connectGarmin() {
+        if (garmin.api == ApiState.KEY_ERROR) { overlay = Overlay.Settings; return }
+        if (garmin.api != ApiState.OFF) { syncGarmin(); return }
         when (garmin.status) {
             HealthSync.Status.NO_PERMISSION -> hcPermLauncher.launch(health.permissions)
             HealthSync.Status.CONNECTED -> syncGarmin()
@@ -265,7 +287,7 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (val o = overlay) {
                     is Overlay.Detail -> DetailScreen(o.id, repo, settings, runs, onShare = { startShare(it) }, onBack = { reload++; overlay = null })
-                    Overlay.Settings -> SettingsScreen(settings, onLang, onBack = { userName = settings.userName; overlay = null })
+                    Overlay.Settings -> SettingsScreen(settings, garminApi, onLang, onBack = { userName = settings.userName; overlay = null; syncGarmin() })
                     null -> when (tab) {
                         Tab.Home -> HomeScreen(runs, userName, garmin,
                             onGarmin = { connectGarmin() },
@@ -318,7 +340,10 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
     }
 }
 
-private data class GarminUi(val status: HealthSync.Status, val lastSyncMs: Long, val latestGarminMs: Long?, val syncing: Boolean)
+private enum class ApiState { OFF, OK, KEY_ERROR, NET_ERROR }
+
+private data class GarminUi(val status: HealthSync.Status, val lastSyncMs: Long, val latestGarminMs: Long?, val syncing: Boolean,
+                            val api: ApiState = ApiState.OFF)
 
 // ---------------------------------------------------------------- 홈
 
@@ -398,11 +423,22 @@ private fun HomeScreen(
 @Composable
 private fun GarminBar(g: GarminUi, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val l = LocalLang.current
-    val ok = g.status == HealthSync.Status.CONNECTED
+    val ok = g.api == ApiState.OK || (g.api == ApiState.OFF && g.status == HealthSync.Status.CONNECTED)
     val timeFmt = DateTimeFormatter.ofPattern(if (l == Lang.EN) "MMM d, h:mm a" else "M/d HH:mm",
         if (l == Lang.EN) Locale.ENGLISH else Locale.KOREAN)
     fun fmt(ms: Long) = Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).format(timeFmt)
-    val (title, detail, action) = when (g.status) {
+    val syncedDetail = if (g.syncing) l.t("가져오는 중…", "Syncing…") else listOfNotNull(
+        g.latestGarminMs?.let { l.t("마지막 Garmin 러닝 ", "Last Garmin run ") + fmt(it) },
+        if (g.lastSyncMs > 0) l.t("확인 ", "Checked ") + fmt(g.lastSyncMs) else null,
+    ).joinToString(" · ")
+    val (title, detail, action) = if (g.api != ApiState.OFF) when (g.api) {
+        ApiState.KEY_ERROR -> Triple(l.t("Garmin API 키 확인 필요", "Check Garmin API key"),
+            l.t("키가 틀렸거나 만료됐습니다. 설정에서 새 키를 넣어 주세요", "Key is wrong or expired. Enter a new key in Settings"), l.t("설정", "Settings"))
+        ApiState.NET_ERROR -> Triple(l.t("Garmin 연결됨 (경로 포함)", "Garmin connected (with routes)"),
+            l.t("이번 가져오기 실패. 잠시 뒤 다시 눌러 주세요", "Sync failed. Tap to retry later"), l.t("다시", "Retry"))
+        else -> Triple(l.t("Garmin 연결됨 (경로 포함)", "Garmin connected (with routes)"),
+            syncedDetail.ifEmpty { l.t("새로고침을 눌러 가져오세요", "Tap Refresh to import") }, l.t("새로고침", "Refresh"))
+    } else when (g.status) {
         HealthSync.Status.CONNECTED -> Triple(
             l.t("Garmin 연결됨", "Garmin connected"),
             if (g.syncing) l.t("가져오는 중…", "Syncing…") else listOfNotNull(
@@ -960,13 +996,18 @@ private fun DetailScreen(id: String, repo: RunRepository, settings: Settings, al
 // ---------------------------------------------------------------- 설정
 
 @Composable
-private fun SettingsScreen(settings: Settings, onLang: (Lang) -> Unit, onBack: () -> Unit) {
+private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (Lang) -> Unit, onBack: () -> Unit) {
     val ctx = LocalContext.current
     val l = LocalLang.current
     var server by remember { mutableStateOf(settings.serverBase) }
     var auto by remember { mutableStateOf(settings.autoUpload) }
     var name by remember { mutableStateOf(settings.userName) }
-    fun saveAndBack() { settings.serverBase = server; settings.autoUpload = auto; settings.userName = name; onBack() }
+    var gKey by remember { mutableStateOf(garminApi.apiKey) }
+    fun saveAndBack() {
+        settings.serverBase = server; settings.autoUpload = auto; settings.userName = name
+        if (gKey.trim() != garminApi.apiKey) garminApi.apiKey = gKey
+        onBack()
+    }
     BackHandler { saveAndBack() }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -986,6 +1027,21 @@ private fun SettingsScreen(settings: Settings, onLang: (Lang) -> Unit, onBack: (
         Text(l.t("이름", "Name"), style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             label = { Text(l.t("홈·계정 화면에 표시", "Shown on Home and Account")) })
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+        Text(l.t("Garmin Personal API 키 (경로 포함 가져오기)", "Garmin Personal API key (import with routes)"), style = MaterialTheme.typography.titleMedium)
+        Text(l.t("본인 기록 전용 키입니다. Garmin Connect 웹 설정에서 만든 키를 붙여 넣으세요. 이 폰에만 저장되고 백업에는 올라가지 않습니다. 비워 두면 Health Connect(경로 없음)만 씁니다.",
+                "Personal-use key for your own data. Paste the key created in Garmin Connect web settings. Stored only on this phone, never backed up. Leave empty to use Health Connect only (no routes)."),
+            color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+        OutlinedTextField(value = gKey, onValueChange = { gKey = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+            label = { Text(l.t("API 키", "API key")) },
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GarminApi.KEY_PAGE))) }
+            }) { Text(l.t("키 만들기 페이지", "Create key page")) }
+            if (gKey.isNotEmpty()) TextButton(onClick = { gKey = "" }) { Text(l.t("키 지우기", "Remove key")) }
+        }
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
         Text(l.t("Claude 연결 서버", "Claude server"), style = MaterialTheme.typography.titleMedium)
         Text(l.t("PC에서 돌리는 기록 서버 주소입니다. 비밀 경로까지 넣으세요. 예: https://run.내도메인/<비밀경로>",

@@ -23,6 +23,14 @@
 2. KR Run 홈 맨 위 "Garmin 연결 안 됨 · 연결"을 눌러 Health Connect 읽기 권한(운동·거리·걸음)을 허용합니다.
 3. 앱을 열 때마다 최근 30일 Garmin 러닝을 가져옵니다. Garmin은 GPS 경로를 Health Connect에 쓰지 않아 가져온 기록에는 지도가 없습니다.
 
+### 경로까지 가져오기 (Garmin Personal API, 본인 데이터 전용)
+1. PC 브라우저에서 https://connect.garmin.com/app/settings/personalApiToken 접속 → Create Key → 약관 동의 → 만료 기간 선택 → 키 복사(한 번만 보임).
+2. 앱 설정 → "Garmin Personal API 키"에 붙여 넣고 저장.
+3. 이후 최근 30일 러닝을 FIT 파일로 받아 경로·구간까지 저장합니다. Health Connect로 들어온 같은 러닝(지도 없음)은 자동으로 대체됩니다.
+- 키는 폰의 별도 설정 파일에만 저장되고 저장소·APK·Google 드라이브 백업에 들어가지 않습니다.
+- Personal 키는 본인 데이터용입니다. 여러 사용자를 대상으로 한 상업 서비스에는 쓸 수 없습니다(Garmin FAQ).
+- 키가 만료되면 홈 상단에 "API 키 확인 필요"가 뜹니다. 새 키를 만들어 다시 넣으면 됩니다.
+
 ## 인스타그램 공유
 홈 '최근 러닝' 오른쪽 공유 버튼(또는 기록 상세의 공유 버튼) → 사진 고르기 → 기록을 얹은 4:5 이미지 미리보기 → "Instagram 게시물".
 

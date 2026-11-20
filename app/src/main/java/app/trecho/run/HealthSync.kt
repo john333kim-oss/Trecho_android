@@ -50,6 +50,8 @@ class HealthSync(private val ctx: Context, private val repo: RunRepository) {
         val running = setOf(ExerciseSessionRecord.EXERCISE_TYPE_RUNNING, ExerciseSessionRecord.EXERCISE_TYPE_RUNNING_TREADMILL)
         var imported = 0
         var latest: Long? = null
+        // Personal API로 경로까지 가져온 같은 러닝은 건너뛴다
+        val apiStarts = repo.all().filter { it.id.startsWith("gc-") }.map { it.startWallMs }
         for (s in sessions) {
             if (s.exerciseType !in running) continue
             val origin = s.metadata.dataOrigin
@@ -58,6 +60,7 @@ class HealthSync(private val ctx: Context, private val repo: RunRepository) {
             if (sourceName == "Garmin") latest = maxOf(latest ?: 0L, s.startTime.toEpochMilli())
             val id = "hc-" + s.metadata.id.filter { it.isLetterOrDigit() || it == '-' }
             if (repo.exists(id)) continue
+            if (apiStarts.any { kotlin.math.abs(it - s.startTime.toEpochMilli()) < 120_000 }) continue
             val agg = client.aggregate(
                 AggregateRequest(
                     metrics = setOf(DistanceRecord.DISTANCE_TOTAL, StepsRecord.COUNT_TOTAL),
