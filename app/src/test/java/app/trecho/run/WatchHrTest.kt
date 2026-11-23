@@ -18,7 +18,7 @@ class WatchHrTest {
         val t = RunTracker()
         t.start(0, 1_000_000)
         t.onHeartRate(150, 0)
-        for (i in 0..20) t.onLocation(GeoFix(37.5 + i * 3.0 / 111_195.0, 127.0, null, 1_000_000L + i * 1000, 5f), i * 1000L)
+        for (i in 0..20) t.onLocation(GeoFix(37.5 + i * 5.0 / 111_195.0, 127.0, null, 1_000_000L + i * 1000, 5f), i * 1000L)
         assertEquals(150, t.points.first().hr)
         // 10초 넘게 심박이 안 오면 비운다
         assertNull(t.points.last().hr)
