@@ -24,12 +24,20 @@ object RunSession {
     private val _path = MutableStateFlow<List<TrackPoint>>(emptyList())
     val path: StateFlow<List<TrackPoint>> = _path
 
+    /** 워치 심박 방송으로 자동 시작한 기록이면 true (방송이 끝나면 자동 종료) */
+    var startedByWatch = false
+        private set
+
+    /** 서비스가 자동으로 끝내고 저장한 기록 id. 화면이 받아서 상세로 이동한다. */
+    val autoSaved = MutableStateFlow<String?>(null)
+
     val isActive: Boolean
         get() = tracker?.state.let { it == RunState.RUNNING || it == RunState.PAUSED }
 
     private fun mono() = SystemClock.elapsedRealtime()
 
-    fun start() {
+    fun start(byWatch: Boolean = false) {
+        startedByWatch = byWatch
         tracker = RunTracker().also { it.start(mono(), System.currentTimeMillis()) }
         _path.value = emptyList()
         tick()
@@ -46,6 +54,10 @@ object RunSession {
         tick()
     }
 
+    fun onHeartRate(bpm: Int) {
+        tracker?.onHeartRate(bpm, mono())
+    }
+
     fun onStepCounter(counter: Long) {
         tracker?.onStepCounter(counter, mono())
     }
@@ -55,11 +67,12 @@ object RunSession {
     }
 
     /** 끝내고 저장할 기록을 돌려준다. 50m 미만이면 null(저장하지 않음). */
-    fun finish(): RunRecord? {
+    fun finish(endMono: Long? = null): RunRecord? {
         val t = tracker ?: return null
-        val now = mono()
+        val now = endMono?.coerceAtMost(mono()) ?: mono()
         t.finish(now)
         tracker = null
+        startedByWatch = false
         _snapshot.value = null
         _path.value = emptyList()
         if (t.distM < 50) return null
@@ -76,6 +89,7 @@ object RunSession {
     }
 
     fun discard() {
+        startedByWatch = false
         tracker = null
         _snapshot.value = null
         _path.value = emptyList()

@@ -4,4 +4,9 @@
     <string name="notif_channel">러닝 기록</string>
     <string name="notif_running">러닝 기록 중</string>
     <string name="notif_paused">일시정지됨</string>
+    <string name="notif_saved">러닝 저장됨</string>
+    <string name="notif_watch_waiting">워치 러닝 대기 중</string>
+    <string name="notif_watch_hint">워치에서 러닝을 시작하면 자동으로 기록합니다</string>
+    <string name="notif_watch_connecting">워치 연결 중…</string>
+    <string name="notif_watch_connected">워치 연결됨</string>
 </resources>

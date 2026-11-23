@@ -10,7 +10,7 @@ object FitParser {
     private const val FIT_EPOCH_S = 631065600L      // 1989-12-31 00:00 UTC
     private const val SEMI = 180.0 / 2147483648.0   // semicircle → 도
 
-    data class Sample(val tsS: Long, val lat: Double?, val lon: Double?, val distM: Double?, val altM: Double?)
+    data class Sample(val tsS: Long, val lat: Double?, val lon: Double?, val distM: Double?, val altM: Double?, val hr: Int? = null)
     data class Session(val startMs: Long?, val timerMs: Long?, val distM: Double?, val steps: Int?)
     data class Activity(val samples: List<Sample>, val session: Session?)
 
@@ -101,7 +101,8 @@ object FitParser {
         val dist = v[5]?.takeIf { it != 0xFFFFFFFFL }?.let { it / 100.0 }
         val alt = v[78]?.takeIf { it != 0xFFFFFFFFL }?.let { it / 5.0 - 500 }
             ?: v[2]?.takeIf { it != 0xFFFFL }?.let { it / 5.0 - 500 }
-        return Sample(ts + FIT_EPOCH_S, lat, lon, dist, alt)
+        val hr = v[3]?.takeIf { it in 1..254 }?.toInt()
+        return Sample(ts + FIT_EPOCH_S, lat, lon, dist, alt, hr)
     }
 
     private fun u16(b: ByteArray, p: Int, big: Boolean): Int {
@@ -147,7 +148,7 @@ object FitParser {
                 }
             }
             if (s.lat != null && s.lon != null && !(abs(s.lat) < 1e-9 && abs(s.lon) < 1e-9)) {
-                points += TrackPoint(s.lat, s.lon, s.altM, s.tsS * 1000, activeMs, s.distM!!)
+                points += TrackPoint(s.lat, s.lon, s.altM, s.tsS * 1000, activeMs, s.distM!!, s.hr)
             }
             prev = s
         }

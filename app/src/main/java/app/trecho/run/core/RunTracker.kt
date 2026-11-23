@@ -24,6 +24,8 @@ data class TrackPoint(
     val wallMs: Long,
     val activeMs: Long,
     val distM: Double,
+    /** 심박(bpm). 워치 심박 방송을 받는 중일 때만 있다. */
+    val hr: Int? = null,
 )
 
 data class Split(val index: Int, val distM: Double, val durationMs: Long) {
@@ -44,6 +46,7 @@ data class RunSnapshot(
     val steps: Int,
     val gpsOk: Boolean,
     val splits: List<Split>,
+    val heartRate: Int? = null,
 )
 
 /**
@@ -95,6 +98,21 @@ class RunTracker(
     var startWallMs = 0L
         private set
 
+    // 최근 심박과 받은 시각(단조 시계). 10초 넘게 안 오면 없는 것으로 본다.
+    private var hr: Int? = null
+    private var hrMonoMs = Long.MIN_VALUE
+    private val hrStaleMs = 10_000L
+
+    fun onHeartRate(bpm: Int, monoMs: Long) {
+        if (bpm !in 30..240) return
+        hr = bpm; hrMonoMs = monoMs
+    }
+
+    private fun currentHr(monoMs: Long): Int? =
+        hr.takeIf { hrMonoMs != Long.MIN_VALUE && monoMs - hrMonoMs <= hrStaleMs }
+
+    private var lastMonoMs = 0L
+
     fun start(monoMs: Long, wallMs: Long) {
         check(state == RunState.IDLE) { "already started" }
         state = RunState.RUNNING
@@ -130,6 +148,7 @@ class RunTracker(
         if (state == RunState.RUNNING) accumulatedMs + (monoMs - resumedAtMs) else accumulatedMs
 
     fun onLocation(fix: GeoFix, monoMs: Long) {
+        lastMonoMs = monoMs
         if (state != RunState.RUNNING) return
         if (fix.accuracyM > maxAccuracyM) return
         val now = activeMs(monoMs)
@@ -192,7 +211,7 @@ class RunTracker(
     }
 
     private fun addPoint(fix: GeoFix, activeMs: Long) {
-        points += TrackPoint(fix.lat, fix.lon, fix.altM, fix.wallMs, activeMs, distM)
+        points += TrackPoint(fix.lat, fix.lon, fix.altM, fix.wallMs, activeMs, distM, currentHr(lastMonoMs))
     }
 
     fun snapshot(monoMs: Long): RunSnapshot {
@@ -212,7 +231,7 @@ class RunTracker(
             if (t1 - t0 >= 10_000 && s1 > s0 && active - t1 <= 10_000) cadence = Math.round((s1 - s0) * 60_000.0 / (t1 - t0)).toInt()
         }
         val gpsOk = lastGoodGpsMonoMs != Long.MIN_VALUE && monoMs - lastGoodGpsMonoMs <= gpsStaleMs
-        return RunSnapshot(state, distM, active, cur, avg, cadence, steps, gpsOk, splits.toList())
+        return RunSnapshot(state, distM, active, cur, avg, cadence, steps, gpsOk, splits.toList(), currentHr(monoMs))
     }
 }
 

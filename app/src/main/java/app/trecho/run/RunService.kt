@@ -17,6 +17,8 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import app.trecho.run.core.GeoFix
@@ -29,10 +31,18 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /**
  * 러닝 중 화면이 꺼져도 GPS·걸음 센서를 계속 받는 포그라운드 서비스.
  * 알림에 거리·시간·평균 페이스를 1초마다 갱신한다.
+ *
+ * 워치 대기 모드(ACTION_WATCH_ON): 등록한 워치의 BLE 심박 방송을 기다리다가
+ * 방송이 잡히면 기록을 자동 시작하고, 방송이 [AUTO_STOP_MS] 동안 끊기면 마지막 심박 시각에서 끝내고 저장한다.
  */
 class RunService : Service(), SensorEventListener {
 
@@ -41,12 +51,16 @@ class RunService : Service(), SensorEventListener {
         const val ACTION_PAUSE = "pause"
         const val ACTION_RESUME = "resume"
         const val ACTION_STOP = "stop"
+        const val ACTION_WATCH_ON = "watch_on"
+        const val ACTION_WATCH_OFF = "watch_off"
+        private const val AUTO_STOP_MS = 60_000L
+        private const val TAG = "RunService"
         private const val CHANNEL = "run"
         private const val NOTIF_ID = 1
 
         fun send(ctx: Context, action: String) {
             val i = Intent(ctx, RunService::class.java).setAction(action)
-            if (action == ACTION_START) ctx.startForegroundService(i) else ctx.startService(i)
+            if (action == ACTION_START || action == ACTION_WATCH_ON) ctx.startForegroundService(i) else ctx.startService(i)
         }
     }
 
@@ -55,6 +69,14 @@ class RunService : Service(), SensorEventListener {
     private val handler = Handler(Looper.getMainLooper())
     private var wakeLock: PowerManager.WakeLock? = null
     private var listening = false
+
+    // 워치 대기
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var watching = false
+    private var hrLink: HrLink? = null
+    private var lastHrMono = 0L          // 마지막 심박을 받은 시각
+    private var linkLostMono = 0L        // 자동 기록 중 방송이 끊긴 시각(0이면 연결 중)
+    private var rearmed = true           // 방송이 한 번 끊겼다가 다시 와야 다음 자동 시작
 
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -70,6 +92,7 @@ class RunService : Service(), SensorEventListener {
     private val ticker = object : Runnable {
         override fun run() {
             RunSession.tick()
+            checkAutoStop()
             updateNotification()
             handler.postDelayed(this, 1000)
         }
@@ -80,21 +103,137 @@ class RunService : Service(), SensorEventListener {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
-                ensureChannel()
-                ServiceCompat.startForeground(this, NOTIF_ID, buildNotification(),
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
-                if (!RunSession.isActive) RunSession.start()
+                if (!goForeground()) return START_NOT_STICKY
+                if (!RunSession.isActive) { RunSession.start(); rearmed = false }
                 startListening()
             }
             ACTION_PAUSE -> { RunSession.pause(); updateNotification() }
             ACTION_RESUME -> { RunSession.resume(); updateNotification() }
-            ACTION_STOP -> { stopListening(); ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE); stopSelf() }
+            ACTION_STOP -> {
+                stopListening()
+                rearmed = false   // 워치가 아직 방송 중이면 바로 다시 시작하지 않게
+                if (watching) updateNotification(force = true) else shutdown()
+            }
+            ACTION_WATCH_ON -> {
+                if (!goForeground()) return START_NOT_STICKY
+                startWatching()
+            }
+            ACTION_WATCH_OFF -> {
+                stopWatching()
+                if (!RunSession.isActive) shutdown()
+            }
             null -> {
-                // 시스템이 서비스를 다시 띄웠는데 진행 중 기록이 없으면 정리한다.
-                if (!RunSession.isActive) stopSelf()
+                // 시스템이 서비스를 다시 띄움: 워치 대기를 켜 두었으면 이어서, 아니면 정리
+                val st = Settings(this)
+                if (st.watchAuto && st.hasWatch && goForeground()) startWatching()
+                else if (!RunSession.isActive) stopSelf()
             }
         }
-        return START_NOT_STICKY
+        return if (watching) START_STICKY else START_NOT_STICKY
+    }
+
+    /** 위치+연결 기기 유형으로 포그라운드 시작. 백그라운드라 위치 유형이 막히면 연결 기기 유형만. */
+    private fun goForeground(): Boolean {
+        ensureChannel()
+        val loc = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        val dev = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        val canDev = Watch.hasBlePermission(this)
+        for (type in listOfNotNull(if (canDev) loc or dev else null, loc, if (canDev) dev else null)) {
+            try {
+                ServiceCompat.startForeground(this, NOTIF_ID, buildNotification(), type)
+                return true
+            } catch (e: Exception) {
+                Log.w(TAG, "startForeground type=$type failed: ${e.message}")
+            }
+        }
+        stopSelf()
+        return false
+    }
+
+    private fun shutdown() {
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    // ---------------------------------------------------------------- 워치 대기
+
+    private fun startWatching() {
+        val st = Settings(this)
+        if (!st.hasWatch) { stopWatching(); return }
+        watching = true
+        val link = hrLink ?: HrLink(this, onHr = ::onWatchHr, onLink = ::onWatchLink).also { hrLink = it }
+        link.start(st.watchAddress, st.watchName)
+        Watch.set(Watch.status.value.copy(btOn = Watch.btEnabled(this)))
+        updateNotification(force = true)
+    }
+
+    private fun stopWatching() {
+        watching = false
+        hrLink?.stop()
+        hrLink = null
+        Watch.set(Watch.Status(btOn = Watch.btEnabled(this)))
+    }
+
+    private fun onWatchLink(link: Watch.Link) {
+        val hr = if (link == Watch.Link.CONNECTED) Watch.status.value.hr else null
+        Watch.set(Watch.Status(link, hr, Watch.btEnabled(this)))
+        if (link == Watch.Link.WAITING || link == Watch.Link.OFF) rearmed = true
+        if (link == Watch.Link.CONNECTED) linkLostMono = 0L
+        else if (RunSession.isActive && RunSession.startedByWatch && linkLostMono == 0L) linkLostMono = SystemClock.elapsedRealtime()
+        updateNotification(force = true)
+    }
+
+    private fun onWatchHr(bpm: Int) {
+        lastHrMono = SystemClock.elapsedRealtime()
+        linkLostMono = 0L
+        Watch.set(Watch.status.value.copy(link = Watch.Link.CONNECTED, hr = bpm))
+        if (!RunSession.isActive && watching && rearmed && Settings(this).watchAuto) {
+            rearmed = false
+            // 워치에서 러닝 시작 → 폰 GPS 기록 자동 시작
+            if (!goForeground()) return
+            RunSession.start(byWatch = true)
+            startListening()
+        }
+        RunSession.onHeartRate(bpm)
+    }
+
+    /** 자동 시작한 기록인데 방송이 끊긴 지 1분이 지나면 마지막 심박 시각에서 끝내고 저장 */
+    private fun checkAutoStop() {
+        if (!RunSession.isActive || !RunSession.startedByWatch) return
+        val now = SystemClock.elapsedRealtime()
+        // 연결이 끊겼거나, 연결은 남았는데 심박이 15초 넘게 안 오면 방송 종료로 본다
+        val since = when {
+            linkLostMono != 0L -> linkLostMono
+            lastHrMono > 0 && now - lastHrMono > 15_000 -> lastHrMono
+            else -> return
+        }
+        if (now - since < AUTO_STOP_MS) return
+        linkLostMono = 0L
+        val rec = RunSession.finish(endMono = lastHrMono.takeIf { it > 0 })
+        stopListening()
+        if (rec == null) { updateNotification(force = true); return }
+        scope.launch {
+            val repo = RunRepository(applicationContext)
+            repo.save(rec)
+            val st = Settings(applicationContext)
+            if (st.autoUpload && st.serverBase.isNotBlank()) repo.upload(rec, st.serverBase)
+            RunSession.autoSaved.value = rec.id
+            showSaved(rec)
+        }
+        if (!watching) shutdown() else updateNotification(force = true)
+    }
+
+    private fun showSaved(rec: app.trecho.run.core.RunRecord) {
+        val open = PendingIntent.getActivity(this, 1, Intent(this, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_IMMUTABLE)
+        val n = NotificationCompat.Builder(this, CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_run)
+            .setContentTitle(getString(R.string.notif_saved))
+            .setContentText("${formatKm(rec.distM)} km · ${formatDuration(rec.activeMs)} · ${formatPace(rec.avgPaceSecPerKm)}/km")
+            .setAutoCancel(true)
+            .setContentIntent(open)
+            .build()
+        runCatching { getSystemService(NotificationManager::class.java).notify(NOTIF_ID + 1, n) }
     }
 
     @SuppressLint("MissingPermission") // 권한은 시작 전에 화면에서 받는다
@@ -126,6 +265,8 @@ class RunService : Service(), SensorEventListener {
 
     override fun onDestroy() {
         stopListening()
+        stopWatching()
+        scope.cancel()
         super.onDestroy()
     }
 
@@ -148,12 +289,24 @@ class RunService : Service(), SensorEventListener {
         val s = RunSession.snapshot.value
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_IMMUTABLE)
-        val title = when (s?.state) {
-            RunState.PAUSED -> getString(R.string.notif_paused)
-            else -> getString(R.string.notif_running)
+        val w = Watch.status.value
+        val title: String
+        val text: String
+        if (s == null) {
+            title = getString(R.string.notif_watch_waiting)
+            text = when (w.link) {
+                Watch.Link.CONNECTED -> getString(R.string.notif_watch_connected) + (w.hr?.let { " · $it bpm" } ?: "")
+                Watch.Link.CONNECTING -> getString(R.string.notif_watch_connecting)
+                else -> getString(R.string.notif_watch_hint)
+            }
+        } else {
+            title = when (s.state) {
+                RunState.PAUSED -> getString(R.string.notif_paused)
+                else -> getString(R.string.notif_running)
+            }
+            text = "${formatKm(s.distM)} km · ${formatDuration(s.activeMs)} · ${formatPace(s.avgPaceSecPerKm)}/km" +
+                (s.heartRate?.let { " · ♥ $it" } ?: "")
         }
-        val text = if (s == null) "" else
-            "${formatKm(s.distM)} km · ${formatDuration(s.activeMs)} · ${formatPace(s.avgPaceSecPerKm)}/km"
         return NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_run)
             .setContentTitle(title)
@@ -165,8 +318,8 @@ class RunService : Service(), SensorEventListener {
             .build()
     }
 
-    private fun updateNotification() {
-        if (!listening) return
-        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification())
+    private fun updateNotification(force: Boolean = false) {
+        if (!listening && !force) return
+        runCatching { getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification()) }
     }
 }

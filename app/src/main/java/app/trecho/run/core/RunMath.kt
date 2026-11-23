@@ -21,6 +21,8 @@ data class RunRecord(
     val avgPaceSecPerKm: Double? get() = if (distM >= 50) activeMs / 1000.0 / (distM / 1000.0) else null
     val cadenceSpm: Int? get() = if (activeMs >= 60_000 && steps > 0) (steps * 60_000.0 / activeMs).toInt() else null
     val elevationGainM: Double get() = elevationGain(points.mapNotNull { it.altM })
+    val avgHr: Int? get() = points.mapNotNull { it.hr }.takeIf { it.size >= 5 }?.average()?.toInt()
+    val maxHr: Int? get() = points.mapNotNull { it.hr }.maxOrNull()
 }
 
 fun formatPace(secPerKm: Double?): String {

@@ -28,8 +28,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * 인스타그램 게시물용 이미지: 고른 사진(4:5로 자름) 위에 왼쪽 아래 경로 모양·날짜·페이스·시간·거리,
- * 오른쪽에 KR Run 로고를 흰 글씨로 얹는다.
+ * 인스타그램 게시물용 이미지: 고른 사진(4:5로 자름) 위에 왼쪽 아래 'KK Run' 색 로고·날짜·페이스·시간·거리를 얹는다.
  */
 object ShareImage {
     private const val W = 1080
@@ -88,21 +87,8 @@ object ShareImage {
         c.drawText(date, left, y, paint(58f, bold))
         y -= 58f + 34f
 
-        // 날짜 위: 경로 모양(있으면)
-        val box = RectF(left, y - 150f, left + 150f, y)
-        drawRoute(c, r, box)
-
-        // 오른쪽 로고
-        val logoKr = paint(96f, black)
-        val logoRun = paint(60f, black)
-        val right = W - 84f
-        val krW = logoKr.measureText("KR")
-        val runW = logoRun.measureText("Run")
-        val ly = box.centerY() + 10f
-        c.drawText("KR", right - krW - runW - 14f, ly, logoKr)
-        c.drawText("Run", right - runW, ly, logoRun)
-        val stripe = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(255, 138, 110) }
-        c.drawRoundRect(RectF(right - runW, ly + 16f, right, ly + 26f), 5f, 5f, stripe)
+        // 날짜 위 왼쪽: 'KK Run' 로고 (KK 코럴, Run 파랑, 아래 코럴 줄)
+        drawLogo(c, left, y)
 
         val dir = File(ctx.cacheDir, "share").apply { mkdirs() }
         val file = File(dir, "run-${r.id}.jpg")
@@ -111,6 +97,88 @@ object ShareImage {
         return file
     }
 
+    private val LOGO_KK = Color.rgb(255, 107, 74)
+    private val LOGO_RUN = Color.rgb(120, 150, 255)
+
+    /** 왼쪽 기준선 [x], 글자 바닥 [baseY]에 'KK Run' 로고 */
+    private fun drawLogo(c: Canvas, x: Float, baseY: Float, scale: Float = 1f) {
+        val black = Typeface.create(Typeface.create("sans-serif-black", Typeface.NORMAL), Typeface.BOLD_ITALIC)
+        fun p(size: Float, color: Int) = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = color; textSize = size * scale; typeface = black
+            setShadowLayer(8f, 0f, 2f, Color.argb(110, 0, 0, 0))
+        }
+        val kk = p(96f, LOGO_KK)
+        val run = p(96f, LOGO_RUN)
+        val kkW = kk.measureText("KK")
+        c.drawText("KK", x, baseY, kk)
+        val rx = x + kkW + 18f * scale
+        c.drawText("Run", rx, baseY, run)
+        val runW = run.measureText("Run")
+        val stripe = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = LOGO_KK }
+        c.drawRoundRect(RectF(rx, baseY + 16f * scale, rx + runW, baseY + 28f * scale), 6f * scale, 6f * scale, stripe)
+    }
+
+    /**
+     * 한 달 러닝 달력 이미지(4:5). 러닝한 날은 코럴 동그라미와 거리, 위에는 달·총거리·횟수·시간.
+     */
+    fun renderMonth(ctx: Context, month: java.time.YearMonth, runs: List<RunRecord>, english: Boolean): File {
+        val out = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888)
+        val c = Canvas(out)
+        c.drawRect(0f, 0f, W.toFloat(), H.toFloat(), Paint().apply {
+            shader = LinearGradient(0f, 0f, W.toFloat(), H.toFloat(), Color.rgb(20, 28, 78), Color.rgb(12, 14, 26), Shader.TileMode.CLAMP)
+        })
+        val bold = Typeface.create("sans-serif", Typeface.BOLD)
+        val medium = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        fun paint(size: Float, tf: Typeface, color: Int = Color.WHITE, align: Paint.Align = Paint.Align.LEFT) =
+            Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color; textSize = size; typeface = tf; textAlign = align }
+        val left = 84f
+        drawLogo(c, left, 170f, 0.8f)
+        val title = if (english) month.format(DateTimeFormatter.ofPattern("MMMM yyyy", java.util.Locale.ENGLISH))
+        else "${month.year}년 ${month.monthValue}월"
+        c.drawText(title, left, 290f, paint(64f, bold))
+        val total = runs.sumOf { it.distM }
+        val stats = listOf(
+            (if (english) "Distance" else "거리") to "${formatKm(total)} km",
+            (if (english) "Runs" else "러닝") to "${runs.size}",
+            (if (english) "Time" else "시간") to formatDuration(runs.sumOf { it.activeMs }),
+        )
+        stats.forEachIndexed { i, (k, v) ->
+            val x = left + i * 310f
+            c.drawText(k, x, 370f, paint(34f, medium, Color.argb(200, 255, 255, 255)))
+            c.drawText(v, x, 440f, paint(58f, bold))
+        }
+        // 달력
+        val heads = if (english) listOf("M", "T", "W", "T", "F", "S", "S") else listOf("월", "화", "수", "목", "금", "토", "일")
+        val gridL = 60f; val gridW = W - 120f; val cell = gridW / 7
+        val top = 540f
+        heads.forEachIndexed { i, h -> c.drawText(h, gridL + cell * i + cell / 2, top, paint(32f, medium, Color.argb(170, 255, 255, 255), Paint.Align.CENTER)) }
+        val zone = ZoneId.systemDefault()
+        val kmByDay = runs.groupBy { Instant.ofEpochMilli(it.startWallMs).atZone(zone).toLocalDate().dayOfMonth }
+            .mapValues { (_, rs) -> rs.sumOf { it.distM } }
+        val lead = month.atDay(1).dayOfWeek.value - 1
+        val rowH = 118f
+        val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = LOGO_KK }
+        for (d in 1..month.lengthOfMonth()) {
+            val idx = lead + d - 1
+            val cx = gridL + cell * (idx % 7) + cell / 2
+            val cy = top + 70f + rowH * (idx / 7)
+            val km = kmByDay[d]
+            if (km != null) {
+                c.drawCircle(cx, cy, 46f, dot)
+                c.drawText("$d", cx, cy + 4f, paint(34f, bold, Color.WHITE, Paint.Align.CENTER))
+                c.drawText(String.format(java.util.Locale.US, "%.1f", km / 1000), cx, cy + 40f, paint(24f, bold, Color.WHITE, Paint.Align.CENTER))
+            } else {
+                c.drawText("$d", cx, cy + 12f, paint(34f, medium, Color.argb(150, 255, 255, 255), Paint.Align.CENTER))
+            }
+        }
+        val dir = File(ctx.cacheDir, "share").apply { mkdirs() }
+        val file = File(dir, "month-$month.jpg")
+        file.outputStream().use { out.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+        out.recycle()
+        return file
+    }
+
+    @Suppress("unused")
     private fun drawRoute(c: Canvas, r: RunRecord, box: RectF) {
         val pts = r.points
         if (pts.size < 2) return

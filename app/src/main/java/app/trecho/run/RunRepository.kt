@@ -100,6 +100,7 @@ class RunRepository(private val ctx: Context) {
                     // 위경도 소수 6자리(약 0.1m), 고도·거리 0.1m로 줄여 저장 공간을 아낀다
                     put(round(p.lat, 1e6)); put(round(p.lon, 1e6)); put(p.altM?.let { round(it, 10.0) } ?: JSONObject.NULL)
                     put(p.wallMs); put(p.activeMs); put(round(p.distM, 10.0))
+                    p.hr?.let { put(it) }
                 })
             }
         })
@@ -126,7 +127,7 @@ class RunRepository(private val ctx: Context) {
             points = (0 until pts.length()).map { i ->
                 val a = pts.getJSONArray(i)
                 TrackPoint(a.getDouble(0), a.getDouble(1), if (a.isNull(2)) null else a.getDouble(2),
-                    a.getLong(3), a.getLong(4), a.getDouble(5))
+                    a.getLong(3), a.getLong(4), a.getDouble(5), if (a.length() > 6 && !a.isNull(6)) a.getInt(6) else null)
             },
             splits = (0 until sps.length()).map { i ->
                 val a = sps.getJSONArray(i)
@@ -153,6 +154,19 @@ class Settings(ctx: Context) {
     var lastSyncMs: Long
         get() = prefs.getLong("lastSyncMs", 0L)
         set(v) = prefs.edit().putLong("lastSyncMs", v).apply()
+    /** 심박 방송을 받을 워치(BLE 주소·이름) */
+    var watchAddress: String
+        get() = prefs.getString("watchAddress", "").orEmpty()
+        set(v) = prefs.edit().putString("watchAddress", v).apply()
+    var watchName: String
+        get() = prefs.getString("watchName", "").orEmpty()
+        set(v) = prefs.edit().putString("watchName", v).apply()
+    /** 워치 심박 방송이 시작되면 러닝 기록 자동 시작·종료 */
+    var watchAuto: Boolean
+        get() = prefs.getBoolean("watchAuto", false)
+        set(v) = prefs.edit().putBoolean("watchAuto", v).apply()
+    val hasWatch get() = watchAddress.isNotEmpty() || watchName.isNotEmpty()
+
     var userName: String
         get() = prefs.getString("userName", "").orEmpty()
         set(v) = prefs.edit().putString("userName", v.trim()).apply()
