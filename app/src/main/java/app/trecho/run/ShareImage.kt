@@ -9,7 +9,6 @@ import android.graphics.Color
 import android.graphics.ImageDecoder
 import android.graphics.LinearGradient
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
@@ -182,30 +181,6 @@ object ShareImage {
     }
 
     @Suppress("unused")
-    private fun drawRoute(c: Canvas, r: RunRecord, box: RectF) {
-        val pts = r.points
-        if (pts.size < 2) return
-        val minLat = pts.minOf { it.lat }; val maxLat = pts.maxOf { it.lat }
-        val minLon = pts.minOf { it.lon }; val maxLon = pts.maxOf { it.lon }
-        val cosLat = Math.cos(Math.toRadians((minLat + maxLat) / 2))
-        val spanX = (maxLon - minLon) * cosLat; val spanY = maxLat - minLat
-        val span = max(spanX, spanY).takeIf { it > 0 } ?: return
-        val k = box.width() / span
-        val offX = box.left + (box.width() - spanX * k).toFloat() / 2
-        val offY = box.top + (box.height() - spanY * k).toFloat() / 2
-        val path = Path()
-        pts.forEachIndexed { i, p ->
-            val x = offX + ((p.lon - minLon) * cosLat * k).toFloat()
-            val y = offY + ((maxLat - p.lat) * k).toFloat()
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-        }
-        c.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 9f
-            strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
-            setShadowLayer(8f, 0f, 2f, Color.argb(110, 0, 0, 0))
-        })
-    }
-
     fun uriFor(ctx: Context, file: File): Uri = FileProvider.getUriForFile(ctx, ctx.packageName + ".files", file)
 
     /** 인스타그램 새 게시물로 공유. 인스타그램이 없으면 공유 앱 선택 창. */

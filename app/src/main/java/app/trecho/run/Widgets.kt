@@ -30,7 +30,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -52,7 +51,6 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 private val Green = Color(0xFF22C55E)
-private val Coral = Color(0xFFFF6B4A)
 private val Indigo = Color(0xFF3B5BFF)
 
 // ---------------------------------------------------------------- 하단 메뉴
@@ -125,19 +123,6 @@ private fun DrawScope.drawHomeGlyph(c: Color, filled: Boolean) {
     drawRoundRect(c, Offset(w * 0.42f, h * 0.62f), Size(w * 0.16f, h * 0.28f), CornerRadius(w * 0.05f))
 }
 
-private fun DrawScope.drawYouGlyph(c: Color, filled: Boolean) {
-    val w = size.width; val h = size.height
-    val stroke = Stroke(width = w * 0.1f, cap = StrokeCap.Round)
-    if (filled) drawCircle(c.copy(alpha = 0.22f), radius = w * 0.18f, center = Offset(w / 2, h * 0.3f))
-    drawCircle(c, radius = w * 0.18f, center = Offset(w / 2, h * 0.3f), style = stroke)
-    val body = Path().apply {
-        moveTo(w * 0.12f, h * 0.92f)
-        cubicTo(w * 0.14f, h * 0.6f, w * 0.86f, h * 0.6f, w * 0.88f, h * 0.92f)
-    }
-    if (filled) drawPath(Path().apply { addPath(body); close() }, c.copy(alpha = 0.22f))
-    drawPath(body, c, style = stroke)
-}
-
 /** 달력: 둥근 사각형 + 위 고리 2개 + 날짜 점 */
 private fun DrawScope.drawCalendarGlyph(c: Color, filled: Boolean) {
     val w = size.width; val h = size.height
@@ -169,20 +154,6 @@ private fun DrawScope.drawGearGlyph(c: Color, filled: Boolean) {
     if (filled) drawPath(gear, c.copy(alpha = 0.22f))
     drawPath(gear, c, style = Stroke(width = w * 0.08f, join = StrokeJoin.Round))
     drawCircle(c, radius = w * 0.12f, center = ctr, style = Stroke(width = w * 0.08f))
-}
-
-/** 달리는 느낌의 재생 삼각형 + 속도선 */
-private fun DrawScope.drawRunGlyph(c: Color) {
-    val w = size.width; val h = size.height
-    drawPath(Path().apply {
-        moveTo(w * 0.36f, h * 0.14f); lineTo(w * 0.9f, h * 0.5f); lineTo(w * 0.36f, h * 0.86f); close()
-    }, c, style = Stroke(width = w * 0.09f, join = StrokeJoin.Round))
-    drawPath(Path().apply {
-        moveTo(w * 0.36f, h * 0.14f); lineTo(w * 0.9f, h * 0.5f); lineTo(w * 0.36f, h * 0.86f); close()
-    }, c)
-    val s = Stroke(width = w * 0.08f, cap = StrokeCap.Round)
-    drawLine(c, Offset(w * 0.04f, h * 0.38f), Offset(w * 0.2f, h * 0.38f), strokeWidth = s.width, cap = StrokeCap.Round)
-    drawLine(c, Offset(w * 0.0f, h * 0.62f), Offset(w * 0.2f, h * 0.62f), strokeWidth = s.width, cap = StrokeCap.Round)
 }
 
 // ---------------------------------------------------------------- 워치·블루투스 상태 아이콘
@@ -230,31 +201,6 @@ private fun DrawScope.drawWatchGlyph(c: Color) {
     drawLine(c, Offset(w / 2, h / 2), Offset(w * 0.64f, h * 0.56f), strokeWidth = sw * 0.8f, cap = StrokeCap.Round)
     // 버튼
     drawRoundRect(c, Offset(w * 0.86f, h * 0.44f), Size(w * 0.1f, h * 0.12f), CornerRadius(w * 0.03f))
-}
-
-/** 블루투스 아이콘. 켜져 있고 워치 대기 중이면 파랑, 켜져만 있으면 회색, 꺼져 있으면 사선. */
-@Composable
-fun BluetoothIcon(btOn: Boolean, active: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit, label: String) {
-    val color = when {
-        btOn && active -> Indigo
-        btOn -> MaterialTheme.colorScheme.onSurfaceVariant
-        else -> MaterialTheme.colorScheme.outline
-    }
-    Box(
-        modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surface).clickable(onClick = onClick)
-            .semantics { contentDescription = label },
-        contentAlignment = Alignment.Center,
-    ) {
-        Canvas(Modifier.size(20.dp)) {
-            val w = size.width; val h = size.height
-            val p = Path().apply {
-                moveTo(w * 0.22f, h * 0.3f); lineTo(w * 0.74f, h * 0.7f); lineTo(w * 0.5f, h * 0.92f)
-                lineTo(w * 0.5f, h * 0.08f); lineTo(w * 0.74f, h * 0.3f); lineTo(w * 0.22f, h * 0.7f)
-            }
-            drawPath(p, color, style = Stroke(w * 0.11f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-            if (!btOn) drawLine(color, Offset(w * 0.08f, h * 0.08f), Offset(w * 0.92f, h * 0.92f), strokeWidth = w * 0.1f, cap = StrokeCap.Round)
-        }
-    }
 }
 
 // ---------------------------------------------------------------- 러닝 이름

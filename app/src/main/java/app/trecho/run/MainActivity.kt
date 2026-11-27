@@ -29,7 +29,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -60,16 +60,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.RadioButton
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -79,7 +74,6 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -165,7 +159,6 @@ private enum class Tab { Home, Calendar, Settings }
 
 private sealed interface Overlay {
     data class Detail(val id: String) : Overlay
-    data object Settings : Overlay
 }
 
 class MainActivity : ComponentActivity() {
@@ -273,7 +266,6 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
     fun refreshHome() { reload++; syncGarmin(); Watch.refreshBt(ctx) }
 
     fun connectGarmin() {
-        if (garmin.api == ApiState.KEY_ERROR) { overlay = null; tab = Tab.Settings; return }
         if (garmin.api != ApiState.OFF) { syncGarmin(); return }
         when (garmin.status) {
             HealthSync.Status.NO_PERMISSION -> hcPermLauncher.launch(health.permissions)
@@ -330,7 +322,6 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (val o = overlay) {
                     is Overlay.Detail -> DetailScreen(o.id, repo, settings, runs, onShare = { startShare(it) }, onBack = { reload++; overlay = null })
-                    Overlay.Settings -> Unit
                     null -> when (tab) {
                         Tab.Home -> HomeScreen(runs, userName, watch, garmin.syncing,
                             onRefresh = { refreshHome() },
@@ -340,8 +331,8 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
                             onGoRun = { recording = true })
                         Tab.Calendar -> CalendarScreen(runs, garmin.syncing, onRefresh = { refreshHome() },
                             onOpen = { overlay = Overlay.Detail(it) }, onShareMonth = { m, rs -> shareMonth(m, rs) })
-                        Tab.Settings -> SettingsScreen(settings, garminApi, onLang, garmin.syncing, onRefresh = { refreshHome() },
-                            onSaved = { userName = settings.userName; syncGarmin() })
+                        Tab.Settings -> SettingsScreen(settings, garminApi, onLang, garmin, onGarmin = { connectGarmin() },
+                            onRefresh = { refreshHome() }, onSaved = { userName = settings.userName; syncGarmin() })
                     }
                 }
             }
@@ -533,7 +524,7 @@ private fun WatchIllustration(connected: Boolean, battery: Int?, modifier: Modif
     }
 }
 
-/** 홈 맨 위 Garmin 연동 상태 줄 */
+/** 설정 > Garmin: 연동 상태 줄. 누르면 Health Connect 권한 요청·동기화 */
 @Composable
 private fun GarminBar(g: GarminUi, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val l = LocalLang.current
@@ -547,7 +538,7 @@ private fun GarminBar(g: GarminUi, onClick: () -> Unit, modifier: Modifier = Mod
     ).joinToString(" · ")
     val (title, detail, action) = if (g.api != ApiState.OFF) when (g.api) {
         ApiState.KEY_ERROR -> Triple(l.t("Garmin API 키 확인 필요", "Check Garmin API key"),
-            l.t("키가 틀렸거나 만료됐습니다: ", "Key is wrong or expired: ") + (g.apiError ?: ""), l.t("설정", "Settings"))
+            l.t("키가 틀렸거나 만료됐습니다: ", "Key is wrong or expired: ") + (g.apiError ?: ""), l.t("다시", "Retry"))
         ApiState.NET_ERROR -> Triple(l.t("Garmin 연결됨 (경로 포함)", "Garmin connected (with routes)"),
             l.t("가져오기 실패: ", "Sync failed: ") + (g.apiError ?: "?"), l.t("다시", "Retry"))
         else -> Triple(l.t("Garmin 연결됨 (경로 포함)", "Garmin connected (with routes)"),
@@ -1094,7 +1085,7 @@ private fun DetailScreen(id: String, repo: RunRepository, settings: Settings, al
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (Lang) -> Unit,
-                           refreshing: Boolean, onRefresh: () -> Unit, onSaved: () -> Unit) {
+                           garmin: GarminUi, onGarmin: () -> Unit, onRefresh: () -> Unit, onSaved: () -> Unit) {
     val ctx = LocalContext.current
     val l = LocalLang.current
     val savedLook by Brand.look.collectAsState()
@@ -1124,7 +1115,7 @@ private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (La
             Text(l.t("변경사항 저장", "Save changes"), fontSize = 16.sp, fontWeight = FontWeight.Bold)
         }
     }
-    PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh, modifier = Modifier.weight(1f).fillMaxWidth()) {
+    PullToRefreshBox(isRefreshing = garmin.syncing, onRefresh = onRefresh, modifier = Modifier.weight(1f).fillMaxWidth()) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         BrandSettings(look) { look = it }
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
@@ -1164,6 +1155,7 @@ private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (La
                 Text(l.t("마지막 오류: ", "Last error: ") + err, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
             }
         }
+        GarminBar(garmin, onGarmin)
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
         WatchSettings(settings)
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)

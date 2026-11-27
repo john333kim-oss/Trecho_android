@@ -98,6 +98,5 @@ class HealthSync(private val ctx: Context, private val repo: RunRepository) {
     }
 
     companion object {
-        const val GARMIN_CONNECT_PACKAGE = "com.garmin.android.apps.connectmobile"
     }
 }

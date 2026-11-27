@@ -12,7 +12,6 @@ import kotlinx.coroutines.flow.StateFlow
 object Brand {
     data class Look(val a: String = "K", val b: String = "K", val color: Long = DEFAULT_COLOR, val colorB: Long = DEFAULT_COLOR) {
         val letters get() = a + b
-        val appName get() = "Run${letters}Run"
     }
 
     const val DEFAULT_COLOR = 0xFFE2553AL

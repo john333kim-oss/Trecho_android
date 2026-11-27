@@ -88,10 +88,4 @@ object RunSession {
         )
     }
 
-    fun discard() {
-        startedByWatch = false
-        tracker = null
-        _snapshot.value = null
-        _path.value = emptyList()
-    }
 }

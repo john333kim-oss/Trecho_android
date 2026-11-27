@@ -21,8 +21,8 @@ android {
         applicationId = "app.trecho.run"
         minSdk = 29          // Android 10+ (갤럭시 S24+는 Android 14 이상)
         targetSdk = 35
-        versionCode = 15
-        versionName = "0.9.2"
+        versionCode = 16
+        versionName = "0.9.3"
         manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
         buildConfigField("boolean", "HAS_MAPS_KEY", if (mapsApiKey.isNotBlank()) "true" else "false")
     }
@@ -64,6 +64,7 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("com.google.android.gms:play-services-location:21.3.0")
     implementation("com.google.android.gms:play-services-maps:19.0.0")
     implementation("com.google.maps.android:maps-compose:6.1.0")
