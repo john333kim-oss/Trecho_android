@@ -16,6 +16,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -207,6 +209,8 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
     }
     val watch by Watch.status.collectAsState()
     var watchSheet by remember { mutableStateOf(false) }
+    val appCtx = LocalContext.current
+    remember { Brand.load(appCtx); Watch.loadBattery(appCtx); true }
 
     // ---- Garmin(Health Connect) 연동
     val ctx = LocalContext.current
@@ -350,7 +354,7 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
         }
     }
 
-    if (watchSheet) WatchSheet(watch, onDismiss = { watchSheet = false })
+    if (watchSheet) WatchSheet(watch, settings, onDismiss = { watchSheet = false })
 
     if (shareBusy) {
         AlertDialog(onDismissRequest = {}, confirmButton = {}, text = { Text(lang.t("이미지 만드는 중…", "Creating image…")) })
@@ -444,40 +448,89 @@ private fun HomeScreen(
     }
 }
 
-/** 워치 상태 창 (홈의 시계 아이콘을 누르면): 연결 상태와 실시간 심박만 */
+/** 워치 창 (홈의 시계 아이콘을 누르면): 워치 그림 + 모델명 + 연결 상태 + 배터리 */
 @Composable
-private fun WatchSheet(watch: Watch.Status, onDismiss: () -> Unit) {
+private fun WatchSheet(watch: Watch.Status, settings: Settings, onDismiss: () -> Unit) {
     val l = LocalLang.current
     val connected = watch.link == Watch.Link.CONNECTED
+    val model = settings.watchName.ifBlank { settings.watchAddress }
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = {},
         title = {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(l.t("워치", "Watch"))
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = onDismiss) { Icon(Icons.Filled.Close, contentDescription = l.t("닫기", "Close")) }
             }
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(l.t("연결 상태", "Status"), fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.weight(1f))
-                    Text(if (connected) l.t("연결됨", "Connected") else l.t("연결 안 됨", "Not connected"),
-                        fontSize = 17.sp, fontWeight = FontWeight.Bold,
-                        color = if (connected) Color(0xFF2EB872) else MaterialTheme.colorScheme.onSurface)
-                }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(l.t("심박수", "Heart rate"), fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.weight(1f))
-                    val hr = watch.hr.takeIf { connected }
-                    Text(hr?.let { "♥ $it bpm" } ?: "-- bpm", fontSize = 17.sp, fontWeight = FontWeight.Bold,
-                        color = if (hr != null) Color(0xFFFF6B4A) else MaterialTheme.colorScheme.onSurface)
-                }
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                WatchIllustration(connected, watch.battery, Modifier.size(170.dp, 210.dp))
+                Text(model.ifBlank { l.t("등록한 워치 없음", "No watch registered") },
+                    fontSize = 24.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                Text(if (connected) l.t("연결됨", "Connected") else l.t("연결 안 됨", "Not connected"),
+                    fontSize = 16.sp, color = if (connected) Color(0xFF2EB872) else MaterialTheme.colorScheme.onSurfaceVariant)
+                val bat = watch.battery
+                Text(
+                    if (bat != null) l.t("배터리 $bat%", "Battery $bat%") else l.t("배터리 정보 없음", "Battery unknown"),
+                    fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    when {
+                        bat == null -> l.t("워치에서 러닝을 시작해 연결되면 읽어 옵니다. 워치가 배터리 정보를 보내지 않으면 표시되지 않습니다.",
+                            "Read when the watch connects during a run. Not shown if the watch doesn't share it.")
+                        connected -> l.t("지금 연결에서 읽은 값", "Read from the current connection")
+                        else -> l.t("마지막 확인 ", "Last checked ") + DateTimeFormatter.ofPattern("M/d HH:mm").format(
+                            Instant.ofEpochMilli(watch.batteryMs).atZone(ZoneId.systemDefault()))
+                    },
+                    fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
             }
         },
     )
+}
+
+/** 실제 제품 사진 대신 그린 원형 스포츠 워치 그림. 화면 테두리 링은 연결되면 초록, 가운데는 배터리 막대. */
+@Composable
+private fun WatchIllustration(connected: Boolean, battery: Int?, modifier: Modifier = Modifier) {
+    val ring = if (connected) Color(0xFF2EB872) else Color(0xFF5A6070)
+    Canvas(modifier) {
+        val w = size.width; val h = size.height
+        val cx = w / 2; val cy = h / 2
+        val r = w * 0.36f
+        val strap = Color(0xFF3A3D44); val strapEdge = Color(0xFF2A2C31)
+        // 줄 (위·아래)
+        drawRoundRect(strap, Offset(cx - r * 0.62f, 0f), Size(r * 1.24f, cy), CornerRadius(r * 0.18f))
+        drawRoundRect(strap, Offset(cx - r * 0.62f, cy), Size(r * 1.24f, h - cy), CornerRadius(r * 0.18f))
+        for (i in 0..1) {
+            drawRoundRect(strapEdge, Offset(cx - r * 0.3f, h * (0.06f + i * 0.06f)), Size(r * 0.6f, h * 0.025f), CornerRadius(h * 0.012f))
+            drawRoundRect(strapEdge, Offset(cx - r * 0.3f, h * (0.88f + i * 0.06f) - h * 0.03f), Size(r * 0.6f, h * 0.025f), CornerRadius(h * 0.012f))
+        }
+        // 옆 버튼
+        listOf(-0.45f, 0.1f, 0.5f).forEach { k ->
+            drawRoundRect(Color(0xFF2A2C31), Offset(cx - r * 1.12f, cy + r * k - r * 0.1f), Size(r * 0.16f, r * 0.2f), CornerRadius(r * 0.05f))
+        }
+        listOf(-0.4f, 0.4f).forEach { k ->
+            drawRoundRect(Color(0xFF2A2C31), Offset(cx + r * 0.96f, cy + r * k - r * 0.1f), Size(r * 0.16f, r * 0.2f), CornerRadius(r * 0.05f))
+        }
+        // 케이스·베젤·화면
+        drawCircle(Color(0xFF16181C), radius = r * 1.02f, center = Offset(cx, cy))
+        drawCircle(Color(0xFF2C2F36), radius = r * 0.92f, center = Offset(cx, cy))
+        drawCircle(Color(0xFF07080A), radius = r * 0.82f, center = Offset(cx, cy))
+        drawArc(ring, startAngle = 135f, sweepAngle = 270f, useCenter = false,
+            topLeft = Offset(cx - r * 0.7f, cy - r * 0.7f), size = Size(r * 1.4f, r * 1.4f),
+            style = Stroke(width = r * 0.07f, cap = StrokeCap.Round))
+        // 배터리 막대
+        val bw = r * 0.7f; val bh = r * 0.32f
+        val bx = cx - bw / 2; val by = cy - bh / 2
+        drawRoundRect(Color(0xFFDDE1E8), Offset(bx, by), Size(bw, bh), CornerRadius(bh * 0.2f), style = Stroke(width = r * 0.05f))
+        drawRoundRect(Color(0xFFDDE1E8), Offset(bx + bw, cy - bh * 0.2f), Size(r * 0.06f, bh * 0.4f), CornerRadius(r * 0.02f))
+        val pct = (battery ?: 0).coerceIn(0, 100) / 100f
+        val fill = when { battery == null -> Color(0xFF5A6070); battery <= 20 -> Color(0xFFE5484D); else -> Color(0xFF2EB872) }
+        if (battery == null || pct > 0f) {
+            val inset = r * 0.07f
+            drawRoundRect(fill, Offset(bx + inset, by + inset), Size((bw - inset * 2) * (if (battery == null) 1f else pct), bh - inset * 2),
+                CornerRadius(bh * 0.12f), alpha = if (battery == null) 0.35f else 1f)
+        }
+    }
 }
 
 /** 홈 맨 위 Garmin 연동 상태 줄 */
@@ -649,14 +702,6 @@ private fun AccountScreen(runs: List<RunRecord>, userName: String, refreshing: B
             Spacer(Modifier.width(10.dp))
             Text(userName.ifBlank { l.t("러너", "Runner") }, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
         }
-        Panel {
-            Text(l.t("전체 기록", "All time"), style = MaterialTheme.typography.titleSmall)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Stat(l.t("거리", "Distance"), "${formatKm(runs.sumOf { it.distM })} km")
-                Stat(l.t("시간", "Time"), formatDuration(runs.sumOf { it.activeMs }))
-                Stat(l.t("러닝", "Runs"), "${runs.size}")
-            }
-        }
         if (bests.isNotEmpty()) Panel {
             Text(l.t("최고기록", "Best efforts"), style = MaterialTheme.typography.titleSmall)
             bests.forEach { b ->
@@ -669,7 +714,7 @@ private fun AccountScreen(runs: List<RunRecord>, userName: String, refreshing: B
         Button(onClick = onSettings, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(26.dp)) {
             Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
-            Text(l.t("설정 (언어·이름·Garmin·워치)", "Settings (language, name, Garmin, watch)"))
+            Text(l.t("설정 (언어·이름·앱 이름·Garmin·워치)", "Settings (language, names, Garmin, watch)"))
         }
     }
     }
@@ -1107,6 +1152,8 @@ private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (La
         OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             label = { Text(l.t("홈·계정 화면에 표시", "Shown on Home and Account")) })
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+        BrandSettings()
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
         Text(l.t("Garmin Personal API 키 (경로 포함 가져오기)", "Garmin Personal API key (import with routes)"), style = MaterialTheme.typography.titleMedium)
         Text(l.t("본인 기록 전용 키입니다. Garmin Connect 웹 설정에서 만든 키를 붙여 넣으세요. 이 폰에만 저장되고 백업에는 올라가지 않습니다. 비워 두면 Health Connect(경로 없음)만 씁니다.",
                 "Personal-use key for your own data. Paste the key created in Garmin Connect web settings. Stored only on this phone, never backed up. Leave empty to use Health Connect only (no routes)."),
@@ -1154,6 +1201,41 @@ private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (La
         if (!BuildConfig.HAS_MAPS_KEY) Text(l.t("지도 © OpenStreetMap 기여자", "Map © OpenStreetMap contributors"),
             color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
         Text("RunKKRun ${BuildConfig.VERSION_NAME}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+    }
+}
+
+// ---------------------------------------------------------------- 앱 이름 개인화
+
+/** Run◯◯Run의 가운데 두 글자와 색을 바꾼다. 바꾸면 바로 홈 로고·공유 이미지에 반영. */
+@Composable
+private fun BrandSettings() {
+    val ctx = LocalContext.current
+    val l = LocalLang.current
+    val look by Brand.look.collectAsState()
+    var a by remember { mutableStateOf(look.a) }
+    var b by remember { mutableStateOf(look.b) }
+    fun save(color: Long = look.color) = Brand.save(ctx, Brand.Look(a, b, color))
+    Text(l.t("앱 이름", "App name"), style = MaterialTheme.typography.titleMedium)
+    Text(l.t("가운데 두 글자를 한 글자씩 바꾸고 색을 고르세요. 휴대폰 홈 화면의 아이콘 이름은 그대로입니다.",
+            "Change the two middle letters and pick a color. The launcher icon name stays the same."),
+        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+    Wordmark(look = Brand.Look(a.ifBlank { " " }, b.ifBlank { " " }, look.color), size = 34)
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        OutlinedTextField(value = a, onValueChange = { v -> a = v.trim().takeLast(1).uppercase(); if (a.isNotEmpty()) save() },
+            singleLine = true, modifier = Modifier.width(90.dp), label = { Text(l.t("첫 글자", "1st")) })
+        OutlinedTextField(value = b, onValueChange = { v -> b = v.trim().takeLast(1).uppercase(); if (b.isNotEmpty()) save() },
+            singleLine = true, modifier = Modifier.width(90.dp), label = { Text(l.t("둘째 글자", "2nd")) })
+        TextButton(onClick = { a = "K"; b = "K"; Brand.save(ctx, Brand.Look()) }) { Text(l.t("기본값", "Reset")) }
+    }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Brand.PALETTE.forEach { c ->
+            val sel = c == look.color
+            Box(
+                Modifier.size(32.dp).clip(CircleShape).background(Color(c))
+                    .then(if (sel) Modifier.border(3.dp, MaterialTheme.colorScheme.onSurface, CircleShape) else Modifier)
+                    .clickable { save(c) }
+            )
+        }
     }
 }
 
@@ -1272,11 +1354,13 @@ private fun FindWatchDialog(onPick: (FoundWatch) -> Unit, onDismiss: () -> Unit)
 // ---------------------------------------------------------------- 공용
 
 @Composable
-private fun Wordmark(modifier: Modifier = Modifier) {
+private fun Wordmark(modifier: Modifier = Modifier, look: Brand.Look? = null, size: Int = 30) {
+    val cur by Brand.look.collectAsState()
+    val b = look ?: cur
     Row(modifier) {
-        Text("Run", fontSize = 30.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic)
-        Text("KK", fontSize = 30.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic, color = MaterialTheme.colorScheme.secondary)
-        Text("Run", fontSize = 30.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic)
+        Text("Run", fontSize = size.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic)
+        Text(b.letters, fontSize = size.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic, color = Color(b.color))
+        Text("Run", fontSize = size.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic)
     }
 }
 

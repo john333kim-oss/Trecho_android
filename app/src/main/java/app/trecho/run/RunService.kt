@@ -161,8 +161,9 @@ class RunService : Service(), SensorEventListener {
         val st = Settings(this)
         if (!st.hasWatch) { stopWatching(); return }
         watching = true
-        val link = hrLink ?: HrLink(this, onHr = ::onWatchHr, onLink = ::onWatchLink).also { hrLink = it }
+        val link = hrLink ?: HrLink(this, onHr = ::onWatchHr, onLink = ::onWatchLink, onBattery = { Watch.saveBattery(this, it) }).also { hrLink = it }
         link.start(st.watchAddress, st.watchName)
+        link.boost()
         Watch.set(Watch.status.value.copy(btOn = Watch.btEnabled(this)))
         updateNotification(force = true)
     }
@@ -171,12 +172,12 @@ class RunService : Service(), SensorEventListener {
         watching = false
         hrLink?.stop()
         hrLink = null
-        Watch.set(Watch.Status(btOn = Watch.btEnabled(this)))
+        Watch.set(Watch.status.value.copy(link = Watch.Link.OFF, hr = null, btOn = Watch.btEnabled(this)))
     }
 
     private fun onWatchLink(link: Watch.Link) {
         val hr = if (link == Watch.Link.CONNECTED) Watch.status.value.hr else null
-        Watch.set(Watch.Status(link, hr, Watch.btEnabled(this)))
+        Watch.set(Watch.status.value.copy(link = link, hr = hr, btOn = Watch.btEnabled(this)))
         if (link == Watch.Link.WAITING || link == Watch.Link.OFF) rearmed = true
         if (link == Watch.Link.CONNECTED) linkLostMono = 0L
         else if (RunSession.isActive && RunSession.startedByWatch && linkLostMono == 0L) linkLostMono = SystemClock.elapsedRealtime()

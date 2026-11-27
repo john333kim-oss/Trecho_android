@@ -66,30 +66,17 @@ enum class NavKind { Home, Calendar, Settings }
 @Composable
 fun FancyNavBar(selected: NavKind?, onSelect: (NavKind) -> Unit, labels: Map<NavKind, String>) {
     val surface = MaterialTheme.colorScheme.surface
-    Box(Modifier.fillMaxWidth().height(92.dp).padding(horizontal = 20.dp), contentAlignment = Alignment.BottomCenter) {
+    Box(Modifier.fillMaxWidth().height(84.dp).padding(horizontal = 20.dp), contentAlignment = Alignment.BottomCenter) {
         Row(
             Modifier.fillMaxWidth().height(64.dp).padding(bottom = 0.dp)
                 .shadow(18.dp, RoundedCornerShape(32.dp), ambientColor = Indigo, spotColor = Indigo)
                 .clip(RoundedCornerShape(32.dp)).background(surface),
             horizontalArrangement = Arrangement.SpaceAround, verticalAlignment = Alignment.CenterVertically,
         ) {
+            // 세 메뉴 모두 같은 크기·색 규칙(고른 메뉴만 강조색 + 아래 점)
             NavSlot(NavKind.Home, selected, onSelect, labels)
-            Box(Modifier.size(72.dp))   // 가운데 버튼 자리
+            NavSlot(NavKind.Calendar, selected, onSelect, labels)
             NavSlot(NavKind.Settings, selected, onSelect, labels)
-        }
-        // 가운데 캘린더 버튼: 바 위로 떠 있는 그라데이션 원
-        val active = selected == NavKind.Calendar
-        val scale by animateFloatAsState(if (active) 1.06f else 1f, label = "calScale")
-        Box(
-            Modifier.align(Alignment.TopCenter).size(70.dp).scale(scale)
-                .shadow(14.dp, CircleShape, ambientColor = Coral, spotColor = Coral)
-                .clip(CircleShape)
-                .background(Brush.linearGradient(listOf(Indigo, Color(0xFF7B5CFF), Coral)))
-                .clickable { onSelect(NavKind.Calendar) }
-                .semantics { contentDescription = labels[NavKind.Calendar].orEmpty() },
-            contentAlignment = Alignment.Center,
-        ) {
-            Canvas(Modifier.size(30.dp)) { drawCalendarGlyph(Color.White) }
         }
     }
 }
@@ -110,7 +97,7 @@ private fun NavSlot(kind: NavKind, selected: NavKind?, onSelect: (NavKind) -> Un
             when (kind) {
                 NavKind.Home -> drawHomeGlyph(color, on)
                 NavKind.Settings -> drawGearGlyph(color, on)
-                NavKind.Calendar -> drawCalendarGlyph(color)
+                NavKind.Calendar -> drawCalendarGlyph(color, on)
             }
         }
         Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp).size((6 * dot).dp).clip(CircleShape).background(color))
@@ -152,9 +139,10 @@ private fun DrawScope.drawYouGlyph(c: Color, filled: Boolean) {
 }
 
 /** 달력: 둥근 사각형 + 위 고리 2개 + 날짜 점 */
-private fun DrawScope.drawCalendarGlyph(c: Color) {
+private fun DrawScope.drawCalendarGlyph(c: Color, filled: Boolean) {
     val w = size.width; val h = size.height
-    val stroke = Stroke(width = w * 0.09f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    val stroke = Stroke(width = w * 0.1f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    if (filled) drawRoundRect(c.copy(alpha = 0.22f), Offset(w * 0.1f, h * 0.18f), Size(w * 0.8f, h * 0.72f), CornerRadius(w * 0.14f))
     drawRoundRect(c, Offset(w * 0.1f, h * 0.18f), Size(w * 0.8f, h * 0.72f), CornerRadius(w * 0.14f), style = stroke)
     drawLine(c, Offset(w * 0.1f, h * 0.4f), Offset(w * 0.9f, h * 0.4f), strokeWidth = w * 0.09f)
     drawLine(c, Offset(w * 0.32f, h * 0.06f), Offset(w * 0.32f, h * 0.26f), strokeWidth = w * 0.09f, cap = StrokeCap.Round)

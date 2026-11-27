@@ -97,7 +97,6 @@ object ShareImage {
         return file
     }
 
-    private val LOGO_KK = Color.rgb(255, 107, 74)
     private val LOGO_RUN = Color.rgb(120, 150, 255)
 
     /** 왼쪽 기준선 [x], 글자 바닥 [baseY]에 'KK Run' 로고 */
@@ -107,14 +106,15 @@ object ShareImage {
             this.color = color; textSize = size * scale; typeface = black
             setShadowLayer(8f, 0f, 2f, Color.argb(110, 0, 0, 0))
         }
-        val kk = p(96f, LOGO_KK)
+        val look = Brand.look.value
+        val kk = p(96f, look.color.toInt())
         val run = p(96f, LOGO_RUN)
-        val kkW = kk.measureText("KK")
-        c.drawText("KK", x, baseY, kk)
+        val kkW = kk.measureText(look.letters)
+        c.drawText(look.letters, x, baseY, kk)
         val rx = x + kkW + 18f * scale
         c.drawText("Run", rx, baseY, run)
         val runW = run.measureText("Run")
-        val stripe = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = LOGO_KK }
+        val stripe = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = look.color.toInt() }
         c.drawRoundRect(RectF(rx, baseY + 16f * scale, rx + runW, baseY + 28f * scale), 6f * scale, 6f * scale, stripe)
     }
 
@@ -157,7 +157,7 @@ object ShareImage {
             .mapValues { (_, rs) -> rs.sumOf { it.distM } }
         val lead = month.atDay(1).dayOfWeek.value - 1
         val rowH = 118f
-        val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = LOGO_KK }
+        val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Brand.look.value.color.toInt() }
         for (d in 1..month.lengthOfMonth()) {
             val idx = lead + d - 1
             val cx = gridL + cell * (idx % 7) + cell / 2
