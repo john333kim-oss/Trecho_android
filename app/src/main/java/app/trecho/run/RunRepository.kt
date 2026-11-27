@@ -4,14 +4,11 @@ import android.content.Context
 import app.trecho.run.core.RunRecord
 import app.trecho.run.core.Split
 import app.trecho.run.core.TrackPoint
-import app.trecho.run.core.toGpx
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 
@@ -54,39 +51,6 @@ class RunRepository(private val ctx: Context) {
     fun exists(id: String) = fileOf(id).exists() || legacyOf(id).exists()
 
     suspend fun delete(id: String) = withContext(Dispatchers.IO) { fileOf(id).delete(); legacyOf(id).delete() }
-
-    /**
-     * 설정한 서버(Claude 연결용 기록 서버)로 GPX를 보낸다. serverBase 예: https://run.example.com/<비밀경로>
-     * 성공 시 서버의 응답 메시지를 돌려준다.
-     */
-    suspend fun upload(r: RunRecord, serverBase: String): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
-            require(serverBase.startsWith("https://")) { "서버 주소는 https:// 로 시작해야 합니다" }
-            val url = URL(serverBase.trimEnd('/') + "/api/upload")
-            val boundary = "----trecho" + System.currentTimeMillis()
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                doOutput = true
-                connectTimeout = 15_000
-                readTimeout = 30_000
-                setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-            }
-            val gpx = toGpx(r, r.title ?: "Run").toByteArray()
-            conn.outputStream.use { out ->
-                out.write("--$boundary\r\nContent-Disposition: form-data; name=\"files\"; filename=\"${r.id}.gpx\"\r\nContent-Type: application/gpx+xml\r\n\r\n".toByteArray())
-                out.write(gpx)
-                out.write("\r\n--$boundary--\r\n".toByteArray())
-            }
-            val code = conn.responseCode
-            val body = (if (code in 200..299) conn.inputStream else conn.errorStream)?.bufferedReader()?.readText().orEmpty()
-            conn.disconnect()
-            check(code in 200..299) { "서버 응답 $code" }
-            val first = JSONArray(body).optJSONObject(0)
-            check(first?.optBoolean("ok") == true) { first?.optString("message") ?: "알 수 없는 응답" }
-            save(r.copy(uploaded = true))
-            first!!.optString("message")
-        }
-    }
 
     private fun toJson(r: RunRecord) = JSONObject().apply {
         put("v", 1)
@@ -137,12 +101,14 @@ class RunRepository(private val ctx: Context) {
     }
 }
 
-/** 간단한 설정 저장 (서버 주소). */
+/** 간단한 설정 저장. */
 class Settings(ctx: Context) {
     private val prefs = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
-    var serverBase: String
-        get() = prefs.getString("serverBase", "").orEmpty()
-        set(v) = prefs.edit().putString("serverBase", v.trim()).apply()
+    /** Google 드라이브 저장 연결 여부(동의를 마친 뒤 켜짐) */
+    var driveOn: Boolean
+        get() = prefs.getBoolean("driveOn", false)
+        set(v) = prefs.edit().putBoolean("driveOn", v).apply()
+    /** 러닝이 끝나면 드라이브에 자동 저장 */
     var autoUpload: Boolean
         get() = prefs.getBoolean("autoUpload", true)
         set(v) = prefs.edit().putBoolean("autoUpload", v).apply()

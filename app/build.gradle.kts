@@ -21,8 +21,8 @@ android {
         applicationId = "app.trecho.run"
         minSdk = 29          // Android 10+ (갤럭시 S24+는 Android 14 이상)
         targetSdk = 35
-        versionCode = 16
-        versionName = "0.9.3"
+        versionCode = 17
+        versionName = "0.9.4"
         manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
         buildConfigField("boolean", "HAS_MAPS_KEY", if (mapsApiKey.isNotBlank()) "true" else "false")
     }
@@ -71,5 +71,7 @@ dependencies {
     implementation("androidx.health.connect:connect-client:1.1.0")
     implementation("org.osmdroid:osmdroid-android:6.1.20")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
+    implementation("com.google.android.gms:play-services-auth:21.2.0")
     testImplementation("junit:junit:4.13.2")
 }

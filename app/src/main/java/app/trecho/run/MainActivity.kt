@@ -10,6 +10,7 @@ import android.provider.Settings as AndroidSettings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -252,6 +253,8 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
                 reload++   // 워치로 자동 저장된 기록이 홈에 바로 보이게
                 syncGarmin()
                 Watch.refreshBt(ctx)
+                // 지난번에 못 올린 기록(오프라인·백그라운드)을 드라이브에 마저 저장
+                scope.launch { if (DriveSync.autoSave(ctx.applicationContext) > 0) reload++ }
                 // 워치 자동 기록을 켜 두었으면 앱을 열 때마다 대기 서비스를 확인(재부팅·종료 후 복구)
                 if (settings.watchAuto && settings.hasWatch && Watch.hasBlePermission(ctx) &&
                     ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
@@ -626,7 +629,7 @@ private fun RunRow(r: RunRecord, onClick: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Text(r.title ?: dateLabel(l, r.startWallMs), fontWeight = FontWeight.Bold)
             Text("${formatDuration(r.activeMs)} · ${formatPace(r.avgPaceSecPerKm)}/km" +
-                (if (r.source != "phone") " · ${r.source}" else "") + if (r.uploaded) l.t(" · 전송됨", " · Sent") else "",
+                (if (r.source != "phone") " · ${r.source}" else "") + if (r.uploaded) l.t(" · 드라이브 저장됨", " · In Drive") else "",
                 color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
         }
         Text("${formatKm(r.distM)} km", fontWeight = FontWeight.Black, fontSize = 18.sp)
@@ -893,7 +896,7 @@ private fun RecordScreen(repo: RunRepository, settings: Settings, onFinished: (S
         if (!save || rec == null) { onFinished(null); return }
         scope.launch {
             repo.save(rec)
-            if (settings.autoUpload && settings.serverBase.isNotBlank()) repo.upload(rec, settings.serverBase)
+            DriveSync.autoSaveLater(ctx)
             onFinished(rec.id)
         }
     }
@@ -1052,15 +1055,16 @@ private fun DetailScreen(id: String, repo: RunRepository, settings: Settings, al
             }
             message?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             if (!r.uploaded) {
-                Button(onClick = {
-                    if (settings.serverBase.isBlank()) { message = l.t("설정에서 서버 주소를 먼저 넣어 주세요.", "Set the server address in Settings first."); return@Button }
-                    message = l.t("보내는 중…", "Sending…")
+                val ctx = LocalContext.current
+                OutlinedButton(onClick = {
+                    if (!settings.driveOn) { message = l.t("설정에서 구글 드라이브를 먼저 연결해 주세요.", "Connect Google Drive in Settings first."); return@OutlinedButton }
+                    message = l.t("저장하는 중…", "Saving…")
                     scope.launch {
-                        message = repo.upload(r, settings.serverBase).fold(
-                            onSuccess = { run = r.copy(uploaded = true); l.t("서버로 보냈어요: $it", "Sent to server: $it") },
-                            onFailure = { l.t("보내지 못했어요: ${it.message}", "Couldn't send: ${it.message}") })
+                        message = DriveSync.saveAll(ctx.applicationContext).fold(
+                            onSuccess = { run = repo.get(r.id); l.t("드라이브 RunKKRun 폴더에 저장했어요.", "Saved to the RunKKRun folder in Drive.") },
+                            onFailure = { l.t("저장하지 못했어요: ${it.message}", "Couldn't save: ${it.message}") })
                     }
-                }, modifier = Modifier.fillMaxWidth()) { Text(l.t("Claude 연결 서버로 보내기", "Send to Claude server")) }
+                }, modifier = Modifier.fillMaxWidth()) { Text(l.t("구글 드라이브에 저장", "Save to Google Drive")) }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outline)
             if (!confirmDelete) {
@@ -1091,18 +1095,17 @@ private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (La
     val savedLook by Brand.look.collectAsState()
     var look by remember { mutableStateOf(savedLook) }
     var lang by remember { mutableStateOf(l) }
-    var server by remember { mutableStateOf(settings.serverBase) }
     var auto by remember { mutableStateOf(settings.autoUpload) }
     var name by remember { mutableStateOf(settings.userName) }
     var gKey by remember { mutableStateOf(garminApi.apiKey) }
     var savedTick by remember { mutableStateOf(0) }
-    val dirty = remember(look, lang, server, auto, name, gKey, savedLook, l, savedTick) {
-        look != savedLook || lang != l || server != settings.serverBase || auto != settings.autoUpload ||
+    val dirty = remember(look, lang, auto, name, gKey, savedLook, l, savedTick) {
+        look != savedLook || lang != l || auto != settings.autoUpload ||
             name != settings.userName || gKey.trim() != garminApi.apiKey
     }
     fun save() {
         if (look.a.isNotBlank() && look.b.isNotBlank()) Brand.save(ctx, look) else look = savedLook
-        settings.serverBase = server; settings.autoUpload = auto; settings.userName = name
+        settings.autoUpload = auto; settings.userName = name
         if (gKey.trim() != garminApi.apiKey) garminApi.apiKey = gKey
         if (lang != l) onLang(lang)
         savedTick++
@@ -1159,16 +1162,7 @@ private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (La
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
         WatchSettings(settings)
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-        Text(l.t("Claude 연결 서버", "Claude server"), style = MaterialTheme.typography.titleMedium)
-        Text(l.t("PC에서 돌리는 기록 서버 주소입니다. 비밀 경로까지 넣으세요. 예: https://run.내도메인/<비밀경로>",
-                "Address of your record server, including the secret path. e.g. https://run.example.com/<secret>"),
-            color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
-        OutlinedTextField(value = server, onValueChange = { server = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-            label = { Text(l.t("서버 주소", "Server address")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(l.t("러닝이 끝나면 자동으로 보내기", "Send automatically after each run"), modifier = Modifier.weight(1f))
-            Switch(checked = auto, onCheckedChange = { auto = it })
-        }
+        DriveSettings(settings, auto) { auto = it }
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
         Text(l.t("배터리 설정 (중요)", "Battery (important)"), style = MaterialTheme.typography.titleMedium)
         Text(l.t("갤럭시는 배터리 절약 때문에 화면이 꺼진 앱을 멈출 수 있습니다. 러닝 중 기록이 끊기지 않게 '배터리 > 제한 없음'으로 바꿔 주세요.",
@@ -1184,6 +1178,66 @@ private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (La
     }
     }
     }
+}
+
+// ---------------------------------------------------------------- 구글 드라이브 저장
+
+/**
+ * 러닝 기록을 내 구글 드라이브 RunKKRun 폴더에 GPX로 저장. 연결·해제는 바로 적용되고,
+ * '자동 저장' 스위치만 다른 설정처럼 '변경사항 저장'으로 저장된다.
+ */
+@Composable
+private fun DriveSettings(settings: Settings, auto: Boolean, onAuto: (Boolean) -> Unit) {
+    val ctx = LocalContext.current
+    val l = LocalLang.current
+    val scope = rememberCoroutineScope()
+    var on by remember { mutableStateOf(settings.driveOn) }
+    var busy by remember { mutableStateOf(false) }
+    var msg by remember { mutableStateOf<String?>(null) }
+    fun saveNow(token: String?) {
+        busy = true
+        scope.launch {
+            msg = DriveSync.saveAll(ctx.applicationContext, token).fold(
+                onSuccess = { n -> if (n == 0) l.t("새로 저장할 기록이 없어요.", "Nothing new to save.") else l.t("기록 ${n}개를 저장했어요.", "Saved $n runs.") },
+                onFailure = { l.t("저장하지 못했어요: ${it.message}", "Couldn't save: ${it.message}") })
+            busy = false
+        }
+    }
+    fun connected(token: String) { settings.driveOn = true; on = true; saveNow(token) }
+    val consent = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { res ->
+        DriveSync.tokenFrom(ctx, res.data).fold(
+            onSuccess = { connected(it) },
+            onFailure = { busy = false; msg = l.t("연결하지 못했어요: ${it.message}", "Couldn't connect: ${it.message}") })
+    }
+    fun connect() {
+        busy = true; msg = null
+        scope.launch {
+            when (val a = DriveSync.authorize(ctx)) {
+                is DriveSync.Auth.Token -> connected(a.value)
+                is DriveSync.Auth.NeedsConsent -> consent.launch(IntentSenderRequest.Builder(a.intent.intentSender).build())
+                is DriveSync.Auth.Failed -> { busy = false; msg = l.t("연결하지 못했어요: ${a.message}", "Couldn't connect: ${a.message}") }
+            }
+        }
+    }
+    Text(l.t("구글 드라이브 저장", "Google Drive"), style = MaterialTheme.typography.titleMedium)
+    Text(l.t("러닝 기록을 내 드라이브의 '${DriveSync.FOLDER}' 폴더에 GPX 파일로 저장합니다. 앱이 만든 파일만 접근합니다. Claude의 구글 드라이브 연결로 이 폴더를 읽어 분석할 수 있습니다.",
+            "Saves each run as a GPX file in the '${DriveSync.FOLDER}' folder of your Drive. The app can only access files it created. Claude can read this folder through its Google Drive connector."),
+        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+    if (on) {
+        Text(l.t("✓ 연결됨", "✓ Connected"), color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(l.t("러닝이 끝나면 자동으로 저장", "Save automatically after each run"), modifier = Modifier.weight(1f))
+            Switch(checked = auto, onCheckedChange = onAuto)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { connect() }, enabled = !busy) { Text(l.t("지금 모두 저장", "Save all now")) }
+            TextButton(onClick = { settings.driveOn = false; on = false; msg = null }, enabled = !busy) { Text(l.t("연결 해제", "Disconnect")) }
+        }
+    } else {
+        OutlinedButton(onClick = { connect() }, enabled = !busy) { Text(l.t("구글 드라이브 연결", "Connect Google Drive")) }
+    }
+    if (busy) Text(l.t("처리 중…", "Working…"), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+    msg?.let { SelectionContainer { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp) } }
 }
 
 // ---------------------------------------------------------------- 앱 이름 개인화

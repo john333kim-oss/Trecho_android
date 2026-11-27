@@ -8,8 +8,8 @@
 - 측정 보정: 정확도 25m 초과 점과 순간이동(12m/s 초과) 제거, 3m 미만 흔들림 무시, GPS가 8초 이상 끊기면 걸음수×학습한 보폭으로 거리 보충
 - 기록 상세: Google 지도(키 등록 시, 없으면 OpenStreetMap)에 경로, 1km 구간별 페이스 막대, 상승 고도, 걸음, 보폭, 이번 러닝이 세운 최고기록
 - 하단 탭: 홈(마지막 러닝 지도+거리·페이스·시간, 이번 주, 최고기록, 기록 목록) · 러닝(시작) · 계정(주별 거리 그래프, 월 달력·예전 달 보기, 전체 기록, 설정)
-- 설정: 한국어/English 전환, 이름, 서버 주소
-- 설정한 Trecho 서버(Claude 연결 MCP 서버)로 GPX 자동 전송 → Claude에서 "이번 주 러닝 어땠어?" 질문 가능
+- 설정: 한국어/English 전환, 이름, 구글 드라이브 저장
+- 내 구글 드라이브 `RunKKRun` 폴더에 GPX 자동 저장 → Claude의 Google Drive 연결로 읽어 "이번 주 러닝 어땠어?" 질문 가능
 
 ## 설치 (GitHub 자동 빌드)
 1. 이 폴더를 비공개 GitHub 저장소 `main` 브랜치에 올리면 Actions가 테스트 후 APK를 만듭니다.
@@ -40,6 +40,13 @@
 3. GitHub 저장소 → Settings → Secrets and variables → Actions → New repository secret: 이름 `MAPS_API_KEY`, 값에 키를 붙여넣습니다.
 4. Actions에서 "Build APK"를 다시 실행(Run workflow)하면 Google 지도가 들어간 APK가 나옵니다. 키가 없으면 OpenStreetMap으로 빌드됩니다.
 
+## 구글 드라이브 저장 연결 (처음 한 번)
+앱에는 키·비밀값이 없고, Google이 패키지 이름과 서명 SHA-1로 앱을 알아봅니다. 지도 키와 같은 Google Cloud 프로젝트에서:
+1. API 및 서비스 → 라이브러리 → "Google Drive API" 사용 설정.
+2. OAuth 동의 화면(Google 인증 플랫폼) → 대상 "외부", 게시 상태 "테스트", 테스트 사용자에 본인 Gmail 추가. 범위는 `.../auth/drive.file`.
+3. 클라이언트 → 클라이언트 만들기 → 유형 "Android", 패키지 `app.trecho.run`, SHA-1은 위 지도 키와 같은 값.
+4. 앱 설정 → "구글 드라이브 연결" → 계정 선택·허용. 이후 러닝이 끝나면 `RunKKRun` 폴더에 GPX가 저장되고, 실패한 기록은 앱을 열 때 다시 올립니다.
+
 ## 백업
 - 러닝 기록(`files/runs`, gzip 압축)과 설정은 Android 자동 백업으로 Google 드라이브에 하루 1번쯤(충전 중·Wi-Fi·대기 상태일 때) 백업됩니다. 휴대폰 설정 → 계정 및 백업 → Google 드라이브 백업이 켜져 있어야 합니다.
 - 앱당 25MB 한도. 압축 저장으로 1시간 러닝 1개가 대략 수십 KB라 수백 개까지 들어갑니다(추정).
@@ -50,7 +57,8 @@
 - `core/RunMath.kt`: 최고기록, 포맷, GPX 변환
 - `RunService.kt`: 위치(Fused Location, 1초)·걸음 센서 수신, 알림
 - `RunSession.kt`: 진행 중 기록 상태 공유
-- `RunRepository.kt`: 폰 내부 JSON 저장, 서버 업로드, 설정
+- `RunRepository.kt`: 폰 내부 JSON 저장, 설정
+- `DriveSync.kt`: 구글 드라이브(drive.file 권한) GPX 저장
 - `MainActivity.kt`: 화면(Compose) · `ui/RouteMap.kt`: 지도 선택(`GoogleRouteMap` / `OsmRouteMap`)
 
 ## 서비스화 전에 바꿀 것

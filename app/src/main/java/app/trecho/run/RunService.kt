@@ -216,8 +216,7 @@ class RunService : Service(), SensorEventListener {
         scope.launch {
             val repo = RunRepository(applicationContext)
             repo.save(rec)
-            val st = Settings(applicationContext)
-            if (st.autoUpload && st.serverBase.isNotBlank()) repo.upload(rec, st.serverBase)
+            DriveSync.autoSaveLater(applicationContext)
             RunSession.autoSaved.value = rec.id
             showSaved(rec)
         }
