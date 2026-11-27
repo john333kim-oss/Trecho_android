@@ -57,7 +57,7 @@ private val Indigo = Color(0xFF3B5BFF)
 
 // ---------------------------------------------------------------- 하단 메뉴
 
-enum class NavKind { Home, Run, You }
+enum class NavKind { Home, Calendar, Settings }
 
 /**
  * 글자 없는 떠 있는 하단 메뉴. 가운데 러닝 버튼은 그라데이션 원형으로 크게,
@@ -75,21 +75,21 @@ fun FancyNavBar(selected: NavKind?, onSelect: (NavKind) -> Unit, labels: Map<Nav
         ) {
             NavSlot(NavKind.Home, selected, onSelect, labels)
             Box(Modifier.size(72.dp))   // 가운데 버튼 자리
-            NavSlot(NavKind.You, selected, onSelect, labels)
+            NavSlot(NavKind.Settings, selected, onSelect, labels)
         }
-        // 가운데 러닝 버튼: 바 위로 떠 있는 그라데이션 원
-        val active = selected == NavKind.Run
-        val scale by animateFloatAsState(if (active) 1.06f else 1f, label = "runScale")
+        // 가운데 캘린더 버튼: 바 위로 떠 있는 그라데이션 원
+        val active = selected == NavKind.Calendar
+        val scale by animateFloatAsState(if (active) 1.06f else 1f, label = "calScale")
         Box(
             Modifier.align(Alignment.TopCenter).size(70.dp).scale(scale)
                 .shadow(14.dp, CircleShape, ambientColor = Coral, spotColor = Coral)
                 .clip(CircleShape)
                 .background(Brush.linearGradient(listOf(Indigo, Color(0xFF7B5CFF), Coral)))
-                .clickable { onSelect(NavKind.Run) }
-                .semantics { contentDescription = labels[NavKind.Run].orEmpty() },
+                .clickable { onSelect(NavKind.Calendar) }
+                .semantics { contentDescription = labels[NavKind.Calendar].orEmpty() },
             contentAlignment = Alignment.Center,
         ) {
-            Canvas(Modifier.size(30.dp)) { drawRunGlyph(Color.White) }
+            Canvas(Modifier.size(30.dp)) { drawCalendarGlyph(Color.White) }
         }
     }
 }
@@ -109,8 +109,8 @@ private fun NavSlot(kind: NavKind, selected: NavKind?, onSelect: (NavKind) -> Un
         Canvas(Modifier.size(28.dp).offset(y = (-3).dp)) {
             when (kind) {
                 NavKind.Home -> drawHomeGlyph(color, on)
-                NavKind.You -> drawYouGlyph(color, on)
-                NavKind.Run -> drawRunGlyph(color)
+                NavKind.Settings -> drawGearGlyph(color, on)
+                NavKind.Calendar -> drawCalendarGlyph(color)
             }
         }
         Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp).size((6 * dot).dp).clip(CircleShape).background(color))
@@ -149,6 +149,38 @@ private fun DrawScope.drawYouGlyph(c: Color, filled: Boolean) {
     }
     if (filled) drawPath(Path().apply { addPath(body); close() }, c.copy(alpha = 0.22f))
     drawPath(body, c, style = stroke)
+}
+
+/** 달력: 둥근 사각형 + 위 고리 2개 + 날짜 점 */
+private fun DrawScope.drawCalendarGlyph(c: Color) {
+    val w = size.width; val h = size.height
+    val stroke = Stroke(width = w * 0.09f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    drawRoundRect(c, Offset(w * 0.1f, h * 0.18f), Size(w * 0.8f, h * 0.72f), CornerRadius(w * 0.14f), style = stroke)
+    drawLine(c, Offset(w * 0.1f, h * 0.4f), Offset(w * 0.9f, h * 0.4f), strokeWidth = w * 0.09f)
+    drawLine(c, Offset(w * 0.32f, h * 0.06f), Offset(w * 0.32f, h * 0.26f), strokeWidth = w * 0.09f, cap = StrokeCap.Round)
+    drawLine(c, Offset(w * 0.68f, h * 0.06f), Offset(w * 0.68f, h * 0.26f), strokeWidth = w * 0.09f, cap = StrokeCap.Round)
+    for (row in 0..1) for (col in 0..2) {
+        drawCircle(c, radius = w * 0.055f, center = Offset(w * (0.3f + col * 0.2f), h * (0.56f + row * 0.18f)))
+    }
+}
+
+/** 톱니바퀴: 이 8개 + 가운데 구멍 */
+private fun DrawScope.drawGearGlyph(c: Color, filled: Boolean) {
+    val w = size.width; val h = size.height
+    val ctr = Offset(w / 2, h / 2)
+    val outer = w * 0.46f; val inner = w * 0.34f
+    val gear = Path()
+    val teeth = 8
+    for (i in 0 until teeth * 4) {
+        val a = Math.toRadians(i * 360.0 / (teeth * 4) - 90).toFloat()
+        val r = if ((i % 4) == 1 || (i % 4) == 2) outer else inner
+        val p = Offset(ctr.x + r * kotlin.math.cos(a), ctr.y + r * kotlin.math.sin(a))
+        if (i == 0) gear.moveTo(p.x, p.y) else gear.lineTo(p.x, p.y)
+    }
+    gear.close()
+    if (filled) drawPath(gear, c.copy(alpha = 0.22f))
+    drawPath(gear, c, style = Stroke(width = w * 0.08f, join = StrokeJoin.Round))
+    drawCircle(c, radius = w * 0.12f, center = ctr, style = Stroke(width = w * 0.08f))
 }
 
 /** 달리는 느낌의 재생 삼각형 + 속도선 */

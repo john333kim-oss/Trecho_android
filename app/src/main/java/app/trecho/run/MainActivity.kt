@@ -159,7 +159,7 @@ private fun bestLabel(l: Lang, label: String) = when (label) {
     else -> label
 }
 
-private enum class Tab { Home, Run, You }
+private enum class Tab { Home, Calendar, Settings }
 
 private sealed interface Overlay {
     data class Detail(val id: String) : Overlay
@@ -203,7 +203,7 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
     LaunchedEffect(autoSaved) {
         val id = autoSaved ?: return@LaunchedEffect
         RunSession.autoSaved.value = null
-        recording = false; reload++; overlay = Overlay.Detail(id)
+        recording = false; reload++; overlay = null; tab = Tab.Home
     }
     val watch by Watch.status.collectAsState()
     var watchSheet by remember { mutableStateOf(false) }
@@ -252,6 +252,7 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
     DisposableEffect(lifecycle) {
         val obs = LifecycleEventObserver { _, e ->
             if (e == Lifecycle.Event.ON_RESUME) {
+                reload++   // 워치로 자동 저장된 기록이 홈에 바로 보이게
                 syncGarmin()
                 Watch.refreshBt(ctx)
                 // 워치 자동 기록을 켜 두었으면 앱을 열 때마다 대기 서비스를 확인(재부팅·종료 후 복구)
@@ -332,17 +333,19 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
                             onWatch = { watchSheet = true },
                             onShare = { startShare(it) },
                             onOpen = { overlay = Overlay.Detail(it) },
-                            onGoRun = { tab = Tab.Run })
-                        Tab.Run -> ReadyScreen(runs, onStart = { recording = true })
-                        Tab.You -> AccountScreen(runs, userName, onOpen = { overlay = Overlay.Detail(it) }, onSettings = { overlay = Overlay.Settings },
-                            onShareMonth = { m, rs -> shareMonth(m, rs) })
+                            onGoRun = { recording = true })
+                        Tab.Calendar -> CalendarScreen(runs, garmin.syncing, onRefresh = { refreshHome() },
+                            onOpen = { overlay = Overlay.Detail(it) }, onShareMonth = { m, rs -> shareMonth(m, rs) })
+                        Tab.Settings -> AccountScreen(runs, userName, garmin.syncing, onRefresh = { refreshHome() },
+                            onSettings = { overlay = Overlay.Settings })
                     }
                 }
             }
             FancyNavBar(
-                selected = if (overlay != null) null else when (tab) { Tab.Home -> NavKind.Home; Tab.Run -> NavKind.Run; Tab.You -> NavKind.You },
-                onSelect = { if (it == NavKind.Home) refreshHome(); overlay = null; tab = when (it) { NavKind.Home -> Tab.Home; NavKind.Run -> Tab.Run; NavKind.You -> Tab.You } },
-                labels = mapOf(NavKind.Home to l.t("홈", "Home"), NavKind.Run to l.t("러닝", "Run"), NavKind.You to l.t("계정", "Account")),
+                selected = if (overlay != null) null else when (tab) { Tab.Home -> NavKind.Home; Tab.Calendar -> NavKind.Calendar; Tab.Settings -> NavKind.Settings },
+                // 메뉴 버튼을 누르면 그 화면으로 가면서 새로고침
+                onSelect = { refreshHome(); overlay = null; tab = when (it) { NavKind.Home -> Tab.Home; NavKind.Calendar -> Tab.Calendar; NavKind.Settings -> Tab.Settings } },
+                labels = mapOf(NavKind.Home to l.t("홈", "Home"), NavKind.Calendar to l.t("캘린더", "Calendar"), NavKind.Settings to l.t("설정", "Settings")),
             )
         }
     }
@@ -588,49 +591,18 @@ private fun RunRow(r: RunRecord, onClick: () -> Unit) {
 
 // ---------------------------------------------------------------- 러닝 탭 (시작 전)
 
-@Composable
-private fun ReadyScreen(runs: List<RunRecord>, onStart: () -> Unit) {
-    val l = LocalLang.current
-    Column(
-        Modifier.fillMaxSize().padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Spacer(Modifier.height(24.dp))
-            Text(l.t("러닝", "Run"), fontSize = 34.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic)
-            Text(l.t("밖으로 나가 GPS가 잡히면 시작하세요.", "Head outside and start once GPS is ready."),
-                color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
-        }
-        Button(
-            onClick = onStart,
-            modifier = Modifier.size(180.dp),
-            shape = CircleShape,
-            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-        ) { Text(l.t("시작", "START"), fontSize = 30.sp, fontWeight = FontWeight.Black) }
-        Text(
-            l.t("총 ${runs.size}회 · ${formatKm(runs.sumOf { it.distM })} km", "${runs.size} runs · ${formatKm(runs.sumOf { it.distM })} km total"),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
+// ---------------------------------------------------------------- 캘린더
 
-// ---------------------------------------------------------------- 계정
-
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AccountScreen(runs: List<RunRecord>, userName: String, onOpen: (String) -> Unit, onSettings: () -> Unit,
-                          onShareMonth: (YearMonth, List<RunRecord>) -> Unit) {
+private fun CalendarScreen(runs: List<RunRecord>, refreshing: Boolean, onRefresh: () -> Unit, onOpen: (String) -> Unit,
+                           onShareMonth: (YearMonth, List<RunRecord>) -> Unit) {
     val l = LocalLang.current
-    val bests = remember(runs) { personalBests(runs) }
     var month by remember { mutableStateOf(YearMonth.now()) }
     var picking by remember { mutableStateOf(false) }
+    PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh, modifier = Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Avatar(userName, 30.dp)
-            Spacer(Modifier.width(10.dp))
-            Text(userName.ifBlank { l.t("러너", "Runner") }, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-            IconButton(onClick = onSettings) { Icon(Icons.Filled.Settings, contentDescription = l.t("설정", "Settings")) }
-        }
+        Text(l.t("캘린더", "Calendar"), fontSize = 24.sp, fontWeight = FontWeight.Bold)
         WeeklyChart(runs)
         Panel {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -657,6 +629,26 @@ private fun AccountScreen(runs: List<RunRecord>, userName: String, onOpen: (Stri
             }
             monthRuns.forEach { r -> RunRow(r) { onOpen(r.id) } }
         }
+    }
+    }
+    if (picking) MonthPicker(month, firstYear = runs.minOfOrNull { localDate(it.startWallMs).year } ?: month.year,
+        onPick = { month = it; picking = false }, onDismiss = { picking = false })
+}
+
+// ---------------------------------------------------------------- 설정 탭 (계정 요약 + 설정)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AccountScreen(runs: List<RunRecord>, userName: String, refreshing: Boolean, onRefresh: () -> Unit, onSettings: () -> Unit) {
+    val l = LocalLang.current
+    val bests = remember(runs) { personalBests(runs) }
+    PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh, modifier = Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Avatar(userName, 30.dp)
+            Spacer(Modifier.width(10.dp))
+            Text(userName.ifBlank { l.t("러너", "Runner") }, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        }
         Panel {
             Text(l.t("전체 기록", "All time"), style = MaterialTheme.typography.titleSmall)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -674,10 +666,13 @@ private fun AccountScreen(runs: List<RunRecord>, userName: String, onOpen: (Stri
                 }
             }
         }
-        OutlinedButton(onClick = onSettings, modifier = Modifier.fillMaxWidth()) { Text(l.t("설정", "Settings")) }
+        Button(onClick = onSettings, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(26.dp)) {
+            Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(l.t("설정 (언어·이름·Garmin·워치)", "Settings (language, name, Garmin, watch)"))
+        }
     }
-    if (picking) MonthPicker(month, firstYear = runs.minOfOrNull { localDate(it.startWallMs).year } ?: month.year,
-        onPick = { month = it; picking = false }, onDismiss = { picking = false })
+    }
 }
 
 private fun localDate(ms: Long): LocalDate = Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).toLocalDate()
