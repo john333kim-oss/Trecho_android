@@ -72,6 +72,9 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ColorScheme
@@ -261,6 +264,9 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
         lifecycle.addObserver(obs)
         onDispose { lifecycle.removeObserver(obs) }
     }
+    /** 홈 새로고침: 기록 다시 읽기 + Garmin 동기화 + 블루투스 상태 */
+    fun refreshHome() { reload++; syncGarmin(); Watch.refreshBt(ctx) }
+
     fun connectGarmin() {
         if (garmin.api == ApiState.KEY_ERROR) { overlay = Overlay.Settings; return }
         if (garmin.api != ApiState.OFF) { syncGarmin(); return }
@@ -321,7 +327,8 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
                     is Overlay.Detail -> DetailScreen(o.id, repo, settings, runs, onShare = { startShare(it) }, onBack = { reload++; overlay = null })
                     Overlay.Settings -> SettingsScreen(settings, garminApi, onLang, onBack = { userName = settings.userName; overlay = null; syncGarmin() })
                     null -> when (tab) {
-                        Tab.Home -> HomeScreen(runs, userName, watch, settings.watchAuto && settings.hasWatch,
+                        Tab.Home -> HomeScreen(runs, userName, watch, garmin.syncing,
+                            onRefresh = { refreshHome() },
                             onWatch = { watchSheet = true },
                             onShare = { startShare(it) },
                             onOpen = { overlay = Overlay.Detail(it) },
@@ -334,16 +341,13 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
             }
             FancyNavBar(
                 selected = if (overlay != null) null else when (tab) { Tab.Home -> NavKind.Home; Tab.Run -> NavKind.Run; Tab.You -> NavKind.You },
-                onSelect = { overlay = null; tab = when (it) { NavKind.Home -> Tab.Home; NavKind.Run -> Tab.Run; NavKind.You -> Tab.You } },
+                onSelect = { if (it == NavKind.Home) refreshHome(); overlay = null; tab = when (it) { NavKind.Home -> Tab.Home; NavKind.Run -> Tab.Run; NavKind.You -> Tab.You } },
                 labels = mapOf(NavKind.Home to l.t("홈", "Home"), NavKind.Run to l.t("러닝", "Run"), NavKind.You to l.t("계정", "Account")),
             )
         }
     }
 
-    if (watchSheet) WatchSheet(garmin, watch, settings,
-        onGarmin = { connectGarmin() },
-        onSettings = { watchSheet = false; overlay = Overlay.Settings },
-        onDismiss = { watchSheet = false })
+    if (watchSheet) WatchSheet(watch, onDismiss = { watchSheet = false })
 
     if (shareBusy) {
         AlertDialog(onDismissRequest = {}, confirmButton = {}, text = { Text(lang.t("이미지 만드는 중…", "Creating image…")) })
@@ -375,9 +379,10 @@ private data class GarminUi(val status: HealthSync.Status, val lastSyncMs: Long,
 
 // ---------------------------------------------------------------- 홈
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HomeScreen(
-    runs: List<RunRecord>, userName: String, watch: Watch.Status, watching: Boolean,
+    runs: List<RunRecord>, userName: String, watch: Watch.Status, refreshing: Boolean, onRefresh: () -> Unit,
     onWatch: () -> Unit, onShare: (RunRecord) -> Unit, onOpen: (String) -> Unit, onGoRun: () -> Unit,
 ) {
     val l = LocalLang.current
@@ -388,13 +393,13 @@ private fun HomeScreen(
         runs.filter { val d = localDate(it.startWallMs); !d.isAfter(lastDay) && !d.isBefore(lastDay.minusDays(2)) }
             .sortedByDescending { it.startWallMs }
 
+    // 아래로 당기면 새로고침
+    PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh, modifier = Modifier.fillMaxSize()) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 12.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Wordmark()
                 Spacer(Modifier.weight(1f))
-                BluetoothIcon(watch.btOn, watching, onClick = onWatch, label = l.t("블루투스 상태", "Bluetooth status"))
-                Spacer(Modifier.width(8.dp))
                 WatchIcon(watch.link, onClick = onWatch, label = when (watch.link) {
                     Watch.Link.CONNECTED -> l.t("워치 연결됨", "Watch connected")
                     Watch.Link.CONNECTING -> l.t("워치 연결 중", "Watch connecting")
@@ -433,35 +438,40 @@ private fun HomeScreen(
             )
         }
     }
+    }
 }
 
-/** 워치·Garmin 연결 정보 창 (홈의 시계·블루투스 아이콘을 누르면) */
+/** 워치 상태 창 (홈의 시계 아이콘을 누르면): 연결 상태와 실시간 심박만 */
 @Composable
-private fun WatchSheet(garmin: GarminUi, watch: Watch.Status, settings: Settings,
-                       onGarmin: () -> Unit, onSettings: () -> Unit, onDismiss: () -> Unit) {
+private fun WatchSheet(watch: Watch.Status, onDismiss: () -> Unit) {
     val l = LocalLang.current
+    val connected = watch.link == Watch.Link.CONNECTED
     AlertDialog(
         onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onSettings) { Text(l.t("워치 설정", "Watch settings")) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(l.t("닫기", "Close")) } },
-        title = { Text(l.t("워치 연결", "Watch")) },
+        confirmButton = {},
+        title = {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(l.t("워치", "Watch"))
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = onDismiss) { Icon(Icons.Filled.Close, contentDescription = l.t("닫기", "Close")) }
+            }
+        },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                val name = settings.watchName.ifBlank { settings.watchAddress }
-                Text(
-                    when {
-                        !settings.hasWatch -> l.t("등록한 워치가 없습니다. 워치 설정에서 심박 센서로 등록하세요.",
-                            "No watch registered. Register it as a heart-rate sensor in Watch settings.")
-                        !settings.watchAuto -> l.t("$name 등록됨 · 자동 기록 꺼짐", "$name registered · auto record off")
-                        else -> when (watch.link) {
-                            Watch.Link.CONNECTED -> l.t("$name 연결됨", "$name connected") + (watch.hr?.let { " · ♥ $it bpm" } ?: "")
-                            Watch.Link.CONNECTING -> l.t("$name 연결 중…", "Connecting to $name…")
-                            else -> l.t("$name 대기 중 · 워치에서 러닝을 시작하면 연결됩니다", "Waiting for $name · starts when you start a run on the watch")
-                        }
-                    }, fontSize = 14.sp)
-                if (!watch.btOn) Text(l.t("휴대폰 블루투스가 꺼져 있습니다.", "Phone Bluetooth is off."), color = MaterialTheme.colorScheme.secondary, fontSize = 14.sp)
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-                GarminBar(garmin, onGarmin)
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(l.t("연결 상태", "Status"), fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.weight(1f))
+                    Text(if (connected) l.t("연결됨", "Connected") else l.t("연결 안 됨", "Not connected"),
+                        fontSize = 17.sp, fontWeight = FontWeight.Bold,
+                        color = if (connected) Color(0xFF2EB872) else MaterialTheme.colorScheme.onSurface)
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(l.t("심박수", "Heart rate"), fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.weight(1f))
+                    val hr = watch.hr.takeIf { connected }
+                    Text(hr?.let { "♥ $it bpm" } ?: "-- bpm", fontSize = 17.sp, fontWeight = FontWeight.Bold,
+                        color = if (hr != null) Color(0xFFFF6B4A) else MaterialTheme.colorScheme.onSurface)
+                }
             }
         },
     )
