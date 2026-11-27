@@ -6,11 +6,11 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * 앱 이름 개인화: "Run" + 두 글자 + "Run". 기본은 RunKKRun.
- * 두 글자와 그 색은 설정에서 바꾸고, 홈 로고와 공유 이미지 로고에 함께 쓴다.
+ * 두 글자와 각 글자의 색은 설정에서 바꾸고, 홈 로고와 공유 이미지 로고에 함께 쓴다.
  * 휴대폰 홈 화면의 앱 아이콘 이름은 설치할 때 정해져서 바뀌지 않는다.
  */
 object Brand {
-    data class Look(val a: String = "K", val b: String = "K", val color: Long = DEFAULT_COLOR) {
+    data class Look(val a: String = "K", val b: String = "K", val color: Long = DEFAULT_COLOR, val colorB: Long = DEFAULT_COLOR) {
         val letters get() = a + b
         val appName get() = "Run${letters}Run"
     }
@@ -30,12 +30,13 @@ object Brand {
             p.getString("brandA", "K").orEmpty().ifBlank { "K" },
             p.getString("brandB", "K").orEmpty().ifBlank { "K" },
             p.getLong("brandColor", DEFAULT_COLOR),
+            p.getLong("brandColorB", p.getLong("brandColor", DEFAULT_COLOR)),
         )
     }
 
     fun save(ctx: Context, look: Look) {
         val l = look.copy(a = look.a.trim().take(1).ifBlank { "K" }, b = look.b.trim().take(1).ifBlank { "K" })
-        prefs(ctx).edit().putString("brandA", l.a).putString("brandB", l.b).putLong("brandColor", l.color).apply()
+        prefs(ctx).edit().putString("brandA", l.a).putString("brandB", l.b).putLong("brandColor", l.color).putLong("brandColorB", l.colorB).apply()
         _look.value = l
     }
 }

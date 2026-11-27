@@ -108,9 +108,12 @@ object ShareImage {
         }
         val look = Brand.look.value
         val kk = p(96f, look.color.toInt())
+        val kk2 = p(96f, look.colorB.toInt())
         val run = p(96f, LOGO_RUN)
-        val kkW = kk.measureText(look.letters)
-        c.drawText(look.letters, x, baseY, kk)
+        val aW = kk.measureText(look.a)
+        c.drawText(look.a, x, baseY, kk)
+        c.drawText(look.b, x + aW, baseY, kk2)
+        val kkW = aW + kk2.measureText(look.b)
         val rx = x + kkW + 18f * scale
         c.drawText("Run", rx, baseY, run)
         val runW = run.measureText("Run")

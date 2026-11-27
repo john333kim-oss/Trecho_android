@@ -273,7 +273,7 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
     fun refreshHome() { reload++; syncGarmin(); Watch.refreshBt(ctx) }
 
     fun connectGarmin() {
-        if (garmin.api == ApiState.KEY_ERROR) { overlay = Overlay.Settings; return }
+        if (garmin.api == ApiState.KEY_ERROR) { overlay = null; tab = Tab.Settings; return }
         if (garmin.api != ApiState.OFF) { syncGarmin(); return }
         when (garmin.status) {
             HealthSync.Status.NO_PERMISSION -> hcPermLauncher.launch(health.permissions)
@@ -330,7 +330,7 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (val o = overlay) {
                     is Overlay.Detail -> DetailScreen(o.id, repo, settings, runs, onShare = { startShare(it) }, onBack = { reload++; overlay = null })
-                    Overlay.Settings -> SettingsScreen(settings, garminApi, onLang, onBack = { userName = settings.userName; overlay = null; syncGarmin() })
+                    Overlay.Settings -> Unit
                     null -> when (tab) {
                         Tab.Home -> HomeScreen(runs, userName, watch, garmin.syncing,
                             onRefresh = { refreshHome() },
@@ -340,8 +340,8 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
                             onGoRun = { recording = true })
                         Tab.Calendar -> CalendarScreen(runs, garmin.syncing, onRefresh = { refreshHome() },
                             onOpen = { overlay = Overlay.Detail(it) }, onShareMonth = { m, rs -> shareMonth(m, rs) })
-                        Tab.Settings -> AccountScreen(runs, userName, garmin.syncing, onRefresh = { refreshHome() },
-                            onSettings = { overlay = Overlay.Settings })
+                        Tab.Settings -> SettingsScreen(settings, garminApi, onLang, garmin.syncing, onRefresh = { refreshHome() },
+                            onSaved = { userName = settings.userName; syncGarmin() })
                     }
                 }
             }
@@ -686,38 +686,6 @@ private fun CalendarScreen(runs: List<RunRecord>, refreshing: Boolean, onRefresh
     }
     if (picking) MonthPicker(month, firstYear = runs.minOfOrNull { localDate(it.startWallMs).year } ?: month.year,
         onPick = { month = it; picking = false }, onDismiss = { picking = false })
-}
-
-// ---------------------------------------------------------------- 설정 탭 (계정 요약 + 설정)
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun AccountScreen(runs: List<RunRecord>, userName: String, refreshing: Boolean, onRefresh: () -> Unit, onSettings: () -> Unit) {
-    val l = LocalLang.current
-    val bests = remember(runs) { personalBests(runs) }
-    PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh, modifier = Modifier.fillMaxSize()) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Avatar(userName, 30.dp)
-            Spacer(Modifier.width(10.dp))
-            Text(userName.ifBlank { l.t("러너", "Runner") }, fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-        }
-        if (bests.isNotEmpty()) Panel {
-            Text(l.t("최고기록", "Best efforts"), style = MaterialTheme.typography.titleSmall)
-            bests.forEach { b ->
-                Row(Modifier.fillMaxWidth()) {
-                    Text(bestLabel(l, b.label), modifier = Modifier.weight(1f))
-                    Text(formatDuration(b.ms), fontWeight = FontWeight.Bold)
-                }
-            }
-        }
-        Button(onClick = onSettings, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(26.dp)) {
-            Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
-            Text(l.t("설정 (언어·이름·앱 이름·Garmin·워치)", "Settings (language, names, Garmin, watch)"))
-        }
-    }
-    }
 }
 
 private fun localDate(ms: Long): LocalDate = Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).toLocalDate()
@@ -1119,31 +1087,54 @@ private fun DetailScreen(id: String, repo: RunRepository, settings: Settings, al
 
 // ---------------------------------------------------------------- 설정
 
+/**
+ * 설정 탭. 화면에서 바꾼 값은 오른쪽 위 '변경사항 저장'을 눌러야 저장된다(바뀐 게 있을 때만 활성).
+ * 워치 등록·자동 기록 켜기는 그 자리에서 바로 적용된다.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (Lang) -> Unit, onBack: () -> Unit) {
+private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (Lang) -> Unit,
+                           refreshing: Boolean, onRefresh: () -> Unit, onSaved: () -> Unit) {
     val ctx = LocalContext.current
     val l = LocalLang.current
+    val savedLook by Brand.look.collectAsState()
+    var look by remember { mutableStateOf(savedLook) }
+    var lang by remember { mutableStateOf(l) }
     var server by remember { mutableStateOf(settings.serverBase) }
     var auto by remember { mutableStateOf(settings.autoUpload) }
     var name by remember { mutableStateOf(settings.userName) }
     var gKey by remember { mutableStateOf(garminApi.apiKey) }
-    fun saveAndBack() {
+    var savedTick by remember { mutableStateOf(0) }
+    val dirty = remember(look, lang, server, auto, name, gKey, savedLook, l, savedTick) {
+        look != savedLook || lang != l || server != settings.serverBase || auto != settings.autoUpload ||
+            name != settings.userName || gKey.trim() != garminApi.apiKey
+    }
+    fun save() {
+        if (look.a.isNotBlank() && look.b.isNotBlank()) Brand.save(ctx, look) else look = savedLook
         settings.serverBase = server; settings.autoUpload = auto; settings.userName = name
         if (gKey.trim() != garminApi.apiKey) garminApi.apiKey = gKey
-        onBack()
+        if (lang != l) onLang(lang)
+        savedTick++
+        onSaved()
     }
-    BackHandler { saveAndBack() }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { saveAndBack() }) { Text(l.t("‹ 저장하고 돌아가기", "‹ Save and back")) }
+    Column(Modifier.fillMaxSize()) {
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(l.t("설정", "Settings"), fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        TextButton(onClick = { save() }, enabled = dirty) {
+            Text(l.t("변경사항 저장", "Save changes"), fontSize = 16.sp, fontWeight = FontWeight.Bold)
         }
+    }
+    PullToRefreshBox(isRefreshing = refreshing, onRefresh = onRefresh, modifier = Modifier.weight(1f).fillMaxWidth()) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        BrandSettings(look) { look = it }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
         Text(l.t("언어", "Language"), style = MaterialTheme.typography.titleMedium)
-        listOf(Lang.KO to "한국어", Lang.EN to "English").forEach { (lang, label) ->
+        listOf(Lang.KO to "한국어", Lang.EN to "English").forEach { (lg, label) ->
             Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { onLang(lang) }.padding(vertical = 4.dp),
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { lang = lg }.padding(vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                RadioButton(selected = l == lang, onClick = { onLang(lang) })
+                RadioButton(selected = lang == lg, onClick = { lang = lg })
                 Text(label, fontSize = 16.sp)
             }
         }
@@ -1151,8 +1142,6 @@ private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (La
         Text(l.t("이름", "Name"), style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             label = { Text(l.t("홈·계정 화면에 표시", "Shown on Home and Account")) })
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-        BrandSettings()
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
         Text(l.t("Garmin Personal API 키 (경로 포함 가져오기)", "Garmin Personal API key (import with routes)"), style = MaterialTheme.typography.titleMedium)
         Text(l.t("본인 기록 전용 키입니다. Garmin Connect 웹 설정에서 만든 키를 붙여 넣으세요. 이 폰에만 저장되고 백업에는 올라가지 않습니다. 비워 두면 Health Connect(경로 없음)만 씁니다.",
@@ -1164,7 +1153,6 @@ private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (La
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
         val keyDirty = gKey.trim() != garminApi.apiKey
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Button(onClick = { saveAndBack() }, enabled = keyDirty) { Text(l.t("저장", "Save")) }
             OutlinedButton(onClick = {
                 runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GarminApi.KEY_PAGE))) }
             }) { Text(l.t("키 만들기 페이지", "Create key page")) }
@@ -1200,43 +1188,42 @@ private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (La
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
         if (!BuildConfig.HAS_MAPS_KEY) Text(l.t("지도 © OpenStreetMap 기여자", "Map © OpenStreetMap contributors"),
             color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-        Text("RunKKRun ${BuildConfig.VERSION_NAME}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+        Text(l.t("앱 버전 ", "App version ") + BuildConfig.VERSION_NAME, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 16.sp)
+    }
+    }
     }
 }
 
 // ---------------------------------------------------------------- 앱 이름 개인화
 
-/** Run◯◯Run의 가운데 두 글자와 색을 바꾼다. 바꾸면 바로 홈 로고·공유 이미지에 반영. */
+/** Run◯◯Run의 가운데 두 글자와 글자별 색. 저장은 설정 화면의 '변경사항 저장'으로. */
 @Composable
-private fun BrandSettings() {
-    val ctx = LocalContext.current
+private fun BrandSettings(look: Brand.Look, onChange: (Brand.Look) -> Unit) {
     val l = LocalLang.current
-    val look by Brand.look.collectAsState()
-    var a by remember { mutableStateOf(look.a) }
-    var b by remember { mutableStateOf(look.b) }
-    fun save(color: Long = look.color) = Brand.save(ctx, Brand.Look(a, b, color))
     Text(l.t("앱 이름", "App name"), style = MaterialTheme.typography.titleMedium)
-    Text(l.t("가운데 두 글자를 한 글자씩 바꾸고 색을 고르세요. 휴대폰 홈 화면의 아이콘 이름은 그대로입니다.",
-            "Change the two middle letters and pick a color. The launcher icon name stays the same."),
+    Text(l.t("가운데 두 글자를 한 글자씩 바꾸고 글자마다 색을 고르세요. 휴대폰 홈 화면의 아이콘 이름은 그대로입니다.",
+            "Change each of the two middle letters and pick a color for each. The launcher icon name stays the same."),
         color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
-    Wordmark(look = Brand.Look(a.ifBlank { " " }, b.ifBlank { " " }, look.color), size = 34)
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-        OutlinedTextField(value = a, onValueChange = { v -> a = v.trim().takeLast(1).uppercase(); if (a.isNotEmpty()) save() },
-            singleLine = true, modifier = Modifier.width(90.dp), label = { Text(l.t("첫 글자", "1st")) })
-        OutlinedTextField(value = b, onValueChange = { v -> b = v.trim().takeLast(1).uppercase(); if (b.isNotEmpty()) save() },
-            singleLine = true, modifier = Modifier.width(90.dp), label = { Text(l.t("둘째 글자", "2nd")) })
-        TextButton(onClick = { a = "K"; b = "K"; Brand.save(ctx, Brand.Look()) }) { Text(l.t("기본값", "Reset")) }
-    }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Brand.PALETTE.forEach { c ->
-            val sel = c == look.color
-            Box(
-                Modifier.size(32.dp).clip(CircleShape).background(Color(c))
-                    .then(if (sel) Modifier.border(3.dp, MaterialTheme.colorScheme.onSurface, CircleShape) else Modifier)
-                    .clickable { save(c) }
-            )
+    Wordmark(look = look.copy(a = look.a.ifBlank { " " }, b = look.b.ifBlank { " " }), size = 34)
+    @Composable
+    fun LetterRow(label: String, value: String, color: Long, onValue: (String) -> Unit, onColor: (Long) -> Unit) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(value = value, onValueChange = { v -> onValue(v.trim().takeLast(1).uppercase()) },
+                singleLine = true, modifier = Modifier.width(120.dp), label = { Text(label) })
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Brand.PALETTE.forEach { c ->
+                    Box(
+                        Modifier.size(30.dp).clip(CircleShape).background(Color(c))
+                            .then(if (c == color) Modifier.border(3.dp, MaterialTheme.colorScheme.onSurface, CircleShape) else Modifier)
+                            .clickable { onColor(c) }
+                    )
+                }
+            }
         }
     }
+    LetterRow(l.t("첫 글자", "1st letter"), look.a, look.color, { onChange(look.copy(a = it)) }, { onChange(look.copy(color = it)) })
+    LetterRow(l.t("둘째 글자", "2nd letter"), look.b, look.colorB, { onChange(look.copy(b = it)) }, { onChange(look.copy(colorB = it)) })
+    TextButton(onClick = { onChange(Brand.Look()) }) { Text(l.t("기본값(KK)으로", "Reset to KK")) }
 }
 
 // ---------------------------------------------------------------- 워치 심박 센서 등록
@@ -1359,7 +1346,8 @@ private fun Wordmark(modifier: Modifier = Modifier, look: Brand.Look? = null, si
     val b = look ?: cur
     Row(modifier) {
         Text("Run", fontSize = size.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic)
-        Text(b.letters, fontSize = size.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic, color = Color(b.color))
+        Text(b.a, fontSize = size.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic, color = Color(b.color))
+        Text(b.b, fontSize = size.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic, color = Color(b.colorB))
         Text("Run", fontSize = size.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic)
     }
 }
