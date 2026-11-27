@@ -122,7 +122,7 @@ class GarminApi(ctx: Context, private val repo: RunRepository) {
             val listStart = parseGmt(a.optString("startTimeGMT"))
             if (listStart != null) latest = maxOf(latest ?: 0L, listStart)
             val id = "gc-$actId"
-            if (repo.exists(id)) continue
+            if (repo.exists(id) || (listStart != null && repo.deletedNear(listStart))) continue
 
             val act = try {
                 val zip = http("GET", "$DOWNLOAD_PATH$actId", bearer, "application/zip, application/x-zip-compressed, application/octet-stream")

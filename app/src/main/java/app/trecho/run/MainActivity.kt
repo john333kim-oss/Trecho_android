@@ -92,6 +92,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -189,6 +190,9 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
     var recording by remember { mutableStateOf(RunSession.isActive) }
     var runs by remember { mutableStateOf<List<RunRecord>>(emptyList()) }
     var reload by remember { mutableStateOf(0) }
+    // 새 러닝이 저장됐을 때 드라이브 미연결이면 한 번만 "드라이브에 저장할까요?" 묻기
+    var drivePrompt by remember { mutableStateOf(false) }
+    fun maybeAskDrive() { if (!settings.driveOn && !settings.drivePromptDone) drivePrompt = true }
     var userName by remember { mutableStateOf(settings.userName) }
     LaunchedEffect(reload) { runs = repo.all() }
 
@@ -200,6 +204,7 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
         val id = autoSaved ?: return@LaunchedEffect
         RunSession.autoSaved.value = null
         recording = false; reload++; overlay = null; tab = Tab.Home
+        maybeAskDrive()
     }
     val watch by Watch.status.collectAsState()
     var watchSheet by remember { mutableStateOf(false) }
@@ -319,7 +324,7 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
         if (recording) {
             RecordScreen(repo, settings, onFinished = { id ->
                 recording = false; reload++
-                if (id != null) overlay = Overlay.Detail(id) else tab = Tab.Home
+                if (id != null) { overlay = Overlay.Detail(id); maybeAskDrive() } else tab = Tab.Home
             })
         } else Column(Modifier.fillMaxSize()) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -349,6 +354,7 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
     }
 
     if (watchSheet) WatchSheet(watch, settings, onDismiss = { watchSheet = false })
+    if (drivePrompt) DrivePromptDialog(onClose = { settings.drivePromptDone = true; drivePrompt = false; reload++ })
 
     if (shareBusy) {
         AlertDialog(onDismissRequest = {}, confirmButton = {}, text = { Text(lang.t("이미지 만드는 중…", "Creating image…")) })
@@ -527,57 +533,6 @@ private fun WatchIllustration(connected: Boolean, battery: Int?, modifier: Modif
     }
 }
 
-/** 설정 > Garmin: 연동 상태 줄. 누르면 Health Connect 권한 요청·동기화 */
-@Composable
-private fun GarminBar(g: GarminUi, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val l = LocalLang.current
-    val ok = g.api == ApiState.OK || (g.api == ApiState.OFF && g.status == HealthSync.Status.CONNECTED)
-    val timeFmt = DateTimeFormatter.ofPattern(if (l == Lang.EN) "MMM d, h:mm a" else "M/d HH:mm",
-        if (l == Lang.EN) Locale.ENGLISH else Locale.KOREAN)
-    fun fmt(ms: Long) = Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).format(timeFmt)
-    val syncedDetail = if (g.syncing) l.t("가져오는 중…", "Syncing…") else listOfNotNull(
-        g.latestGarminMs?.let { l.t("마지막 Garmin 러닝 ", "Last Garmin run ") + fmt(it) },
-        if (g.lastSyncMs > 0) l.t("확인 ", "Checked ") + fmt(g.lastSyncMs) else null,
-    ).joinToString(" · ")
-    val (title, detail, action) = if (g.api != ApiState.OFF) when (g.api) {
-        ApiState.KEY_ERROR -> Triple(l.t("Garmin API 키 확인 필요", "Check Garmin API key"),
-            l.t("키가 틀렸거나 만료됐습니다: ", "Key is wrong or expired: ") + (g.apiError ?: ""), l.t("다시", "Retry"))
-        ApiState.NET_ERROR -> Triple(l.t("Garmin 연결됨 (경로 포함)", "Garmin connected (with routes)"),
-            l.t("가져오기 실패: ", "Sync failed: ") + (g.apiError ?: "?"), l.t("다시", "Retry"))
-        else -> Triple(l.t("Garmin 연결됨 (경로 포함)", "Garmin connected (with routes)"),
-            listOfNotNull(syncedDetail.ifEmpty { null }, g.apiError?.let { l.t("일부 실패: ", "Some failed: ") + it }).joinToString(" · ")
-                .ifEmpty { l.t("새로고침을 눌러 가져오세요", "Tap Refresh to import") }, l.t("새로고침", "Refresh"))
-    } else when (g.status) {
-        HealthSync.Status.CONNECTED -> Triple(
-            l.t("Garmin 연결됨", "Garmin connected"),
-            if (g.syncing) l.t("가져오는 중…", "Syncing…") else listOfNotNull(
-                g.latestGarminMs?.let { l.t("마지막 Garmin 러닝 ", "Last Garmin run ") + fmt(it) },
-                if (g.lastSyncMs > 0) l.t("확인 ", "Checked ") + fmt(g.lastSyncMs) else null,
-            ).joinToString(" · ").ifEmpty { l.t("Garmin Connect에서 Health Connect 공유를 켜 주세요", "Turn on Health Connect sharing in Garmin Connect") },
-            l.t("새로고침", "Refresh"),
-        )
-        HealthSync.Status.NO_PERMISSION -> Triple(l.t("Garmin 연결 안 됨", "Garmin not connected"),
-            l.t("Health Connect 권한을 허용하면 워치 기록을 가져옵니다", "Allow Health Connect access to import watch runs"), l.t("연결", "Connect"))
-        HealthSync.Status.NEEDS_UPDATE -> Triple(l.t("Garmin 연결 안 됨", "Garmin not connected"),
-            l.t("Health Connect 업데이트가 필요합니다", "Health Connect needs an update"), l.t("업데이트", "Update"))
-        HealthSync.Status.UNAVAILABLE -> Triple(l.t("Garmin 연결 안 됨", "Garmin not connected"),
-            l.t("Health Connect를 사용할 수 없습니다", "Health Connect is not available"), l.t("설치", "Install"))
-    }
-    Row(
-        modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(10.dp).clip(CircleShape).background(if (ok) Color(0xFF1F8A5B) else MaterialTheme.colorScheme.outline))
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Text(detail, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 4)
-        }
-        Text(action, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-    }
-}
-
 /** 러닝 카드: 머리글(아바타·이름·공유) → 지도 → 거리·페이스·시간 */
 @Composable
 private fun RunCard(r: RunRecord, userName: String, onShare: () -> Unit, onClick: () -> Unit) {
@@ -664,15 +619,24 @@ private fun CalendarScreen(runs: List<RunRecord>, refreshing: Boolean, onRefresh
                 modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text(l.t("이번 달 기록 인스타그램 공유", "Share this month to Instagram"))
+                Text(l.t("${monthLabel(l, month)} 기록 인스타그램 공유", "Share ${monthLabel(l, month)} to Instagram"))
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Stat(l.t("거리", "Distance"), "${formatKm(monthRuns.sumOf { it.distM })} km")
-                Stat(l.t("시간", "Time"), formatDuration(monthRuns.sumOf { it.activeMs }))
-                Stat(l.t("러닝", "Runs"), "${monthRuns.size}")
+                Stat(l.t("누적거리", "Total distance"), "${formatKm(monthRuns.sumOf { it.distM })} km")
+                Stat(l.t("누적시간", "Total time"), formatDuration(monthRuns.sumOf { it.activeMs }))
+                Stat(l.t("러닝횟수", "Runs"), "${monthRuns.size}")
             }
             if (monthRuns.isEmpty()) {
                 Text(l.t("이 달에는 기록이 없습니다.", "No runs this month."), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+            }
+            if (monthRuns.isNotEmpty()) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp)) {
+                    Text(l.t("날짜", "Date"), modifier = Modifier.weight(1f), fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(l.t("러닝거리", "Distance"), fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
             }
             monthRuns.forEach { r -> RunRow(r) { onOpen(r.id) } }
         }
@@ -1120,61 +1084,70 @@ private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (La
     }
     PullToRefreshBox(isRefreshing = garmin.syncing, onRefresh = onRefresh, modifier = Modifier.weight(1f).fillMaxWidth()) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        BrandSettings(look) { look = it }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-        Text(l.t("언어", "Language"), style = MaterialTheme.typography.titleMedium)
-        listOf(Lang.KO to "한국어", Lang.EN to "English").forEach { (lg, label) ->
-            Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { lang = lg }.padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(selected = lang == lg, onClick = { lang = lg })
-                Text(label, fontSize = 16.sp)
+        Panel { BrandSettings(look) { look = it } }
+        Panel {
+            Text(l.t("언어", "Language"), style = MaterialTheme.typography.titleMedium)
+            Row(Modifier.fillMaxWidth()) {
+                listOf(Lang.KO to "한국어", Lang.EN to "English").forEach { (lg, label) ->
+                    Row(
+                        Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).clickable { lang = lg }.padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = lang == lg, onClick = { lang = lg })
+                        Text(label, fontSize = 16.sp)
+                    }
+                }
             }
         }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-        Text(l.t("이름", "Name"), style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-            label = { Text(l.t("홈·계정 화면에 표시", "Shown on Home and Account")) })
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-        Text(l.t("Garmin Personal API 키 (경로 포함 가져오기)", "Garmin Personal API key (import with routes)"), style = MaterialTheme.typography.titleMedium)
-        Text(l.t("본인 기록 전용 키입니다. Garmin Connect 웹 설정에서 만든 키를 붙여 넣으세요. 이 폰에만 저장되고 백업에는 올라가지 않습니다. 비워 두면 Health Connect(경로 없음)만 씁니다.",
-                "Personal-use key for your own data. Paste the key created in Garmin Connect web settings. Stored only on this phone, never backed up. Leave empty to use Health Connect only (no routes)."),
-            color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
-        OutlinedTextField(value = gKey, onValueChange = { gKey = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-            label = { Text(l.t("API 키", "API key")) },
-            visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
-        val keyDirty = gKey.trim() != garminApi.apiKey
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Panel {
+            Text(l.t("이름", "Name"), style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                label = { Text(l.t("홈 화면에 표시", "Shown on Home")) })
+        }
+        Panel {
+            Text(l.t("Garmin Personal API 키 (경로 포함 가져오기)", "Garmin Personal API key (import with routes)"), style = MaterialTheme.typography.titleMedium)
+            Text(l.t("본인 기록 전용 키입니다. Garmin Connect 웹 설정에서 만든 키를 붙여 넣으세요. 이 폰에만 저장되고 백업에는 올라가지 않습니다. 비워 두면 Health Connect(경로 없음)만 씁니다.",
+                    "Personal-use key for your own data. Paste the key created in Garmin Connect web settings. Stored only on this phone, never backed up. Leave empty to use Health Connect only (no routes)."),
+                color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+            OutlinedTextField(value = gKey, onValueChange = { gKey = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                label = { Text(l.t("API 키", "API key")) },
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+            val keyDirty = gKey.trim() != garminApi.apiKey
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = {
+                    runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GarminApi.KEY_PAGE))) }
+                }) { Text(l.t("키 만들기 페이지", "Create key page")) }
+                if (gKey.isNotEmpty()) TextButton(onClick = { gKey = "" }) { Text(l.t("지우기", "Clear")) }
+            }
+            if (!keyDirty && garminApi.hasKey) Text(l.t("✓ 키 저장됨", "✓ Key saved"), color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
+            garminApi.lastError?.let { err ->
+                SelectionContainer {
+                    Text(l.t("마지막 오류: ", "Last error: ") + err, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                }
+            }
+            // Health Connect 권한이 아직 없을 때만 연결 버튼(연결된 뒤에는 숨김)
+            if (garmin.status != HealthSync.Status.CONNECTED) {
+                TextButton(onClick = onGarmin) { Text(l.t("Health Connect 연결 (Garmin 기록 가져오기)", "Connect Health Connect (import Garmin runs)")) }
+            }
+        }
+        Panel { WatchSettings(settings) }
+        Panel { DriveSettings(settings, auto) { auto = it } }
+        Panel {
+            Text(l.t("배터리 설정 (중요)", "Battery (important)"), style = MaterialTheme.typography.titleMedium)
+            Text(l.t("갤럭시는 배터리 절약 때문에 화면이 꺼진 앱을 멈출 수 있습니다. 러닝 중 기록이 끊기지 않게 '배터리 > 제한 없음'으로 바꿔 주세요.",
+                    "Galaxy phones may stop apps when the screen is off. Set 'Battery > Unrestricted' so runs keep recording."),
+                color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
             OutlinedButton(onClick = {
-                runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GarminApi.KEY_PAGE))) }
-            }) { Text(l.t("키 만들기 페이지", "Create key page")) }
-            if (gKey.isNotEmpty()) TextButton(onClick = { gKey = "" }) { Text(l.t("지우기", "Clear")) }
+                ctx.startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + ctx.packageName)))
+            }) { Text(l.t("앱 설정 열기", "Open app settings")) }
         }
-        if (!keyDirty && garminApi.hasKey) Text(l.t("✓ 키 저장됨", "✓ Key saved"), color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
-        garminApi.lastError?.let { err ->
-            SelectionContainer {
-                Text(l.t("마지막 오류: ", "Last error: ") + err, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
-            }
-        }
-        GarminBar(garmin, onGarmin)
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-        WatchSettings(settings)
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-        DriveSettings(settings, auto) { auto = it }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-        Text(l.t("배터리 설정 (중요)", "Battery (important)"), style = MaterialTheme.typography.titleMedium)
-        Text(l.t("갤럭시는 배터리 절약 때문에 화면이 꺼진 앱을 멈출 수 있습니다. 러닝 중 기록이 끊기지 않게 '배터리 > 제한 없음'으로 바꿔 주세요.",
-                "Galaxy phones may stop apps when the screen is off. Set 'Battery > Unrestricted' so runs keep recording."),
-            color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
-        OutlinedButton(onClick = {
-            ctx.startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + ctx.packageName)))
-        }) { Text(l.t("앱 설정 열기", "Open app settings")) }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
         if (!BuildConfig.HAS_MAPS_KEY) Text(l.t("지도 © OpenStreetMap 기여자", "Map © OpenStreetMap contributors"),
             color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-        Text(l.t("앱 버전 ", "App version ") + BuildConfig.VERSION_NAME, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 16.sp)
+        Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(l.t("앱 버전 ", "App version ") + BuildConfig.VERSION_NAME, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 16.sp)
+            Text("Built by 김기룡", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+        }
     }
     }
     }
@@ -1188,37 +1161,12 @@ private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (La
  */
 @Composable
 private fun DriveSettings(settings: Settings, auto: Boolean, onAuto: (Boolean) -> Unit) {
-    val ctx = LocalContext.current
     val l = LocalLang.current
-    val scope = rememberCoroutineScope()
     var on by remember { mutableStateOf(settings.driveOn) }
     var busy by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf<String?>(null) }
-    fun saveNow(token: String?) {
-        busy = true
-        scope.launch {
-            msg = DriveSync.saveAll(ctx.applicationContext, token).fold(
-                onSuccess = { n -> if (n == 0) l.t("새로 저장할 기록이 없어요.", "Nothing new to save.") else l.t("기록 ${n}개를 저장했어요.", "Saved $n runs.") },
-                onFailure = { l.t("저장하지 못했어요: ${it.message}", "Couldn't save: ${it.message}") })
-            busy = false
-        }
-    }
-    fun connected(token: String) { settings.driveOn = true; on = true; saveNow(token) }
-    val consent = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { res ->
-        DriveSync.tokenFrom(ctx, res.data).fold(
-            onSuccess = { connected(it) },
-            onFailure = { busy = false; msg = l.t("연결하지 못했어요: ${it.message}", "Couldn't connect: ${it.message}") })
-    }
-    fun connect() {
-        busy = true; msg = null
-        scope.launch {
-            when (val a = DriveSync.authorize(ctx)) {
-                is DriveSync.Auth.Token -> connected(a.value)
-                is DriveSync.Auth.NeedsConsent -> consent.launch(IntentSenderRequest.Builder(a.intent.intentSender).build())
-                is DriveSync.Auth.Failed -> { busy = false; msg = l.t("연결하지 못했어요: ${a.message}", "Couldn't connect: ${a.message}") }
-            }
-        }
-    }
+    val connectNow = rememberDriveConnect { ok, m -> busy = false; msg = m; if (ok) on = true }
+    fun connect() { busy = true; msg = null; connectNow() }
     Text(l.t("구글 드라이브 저장", "Google Drive"), style = MaterialTheme.typography.titleMedium)
     Text(l.t("러닝 기록을 내 드라이브의 '${DriveSync.FOLDER}' 폴더에 GPX 파일로 저장합니다. 앱이 만든 파일만 접근합니다. Claude의 구글 드라이브 연결로 이 폴더를 읽어 분석할 수 있습니다.",
             "Saves each run as a GPX file in the '${DriveSync.FOLDER}' folder of your Drive. The app can only access files it created. Claude can read this folder through its Google Drive connector."),
@@ -1240,29 +1188,90 @@ private fun DriveSettings(settings: Settings, auto: Boolean, onAuto: (Boolean) -
     msg?.let { SelectionContainer { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp) } }
 }
 
+/**
+ * 드라이브 연결 한 번에: 계정 선택·허용(처음만) → 연결 표시 → 남은 기록 저장.
+ * 결과는 onResult(성공 여부, 안내 문구)로 돌려준다.
+ */
+@Composable
+private fun rememberDriveConnect(onResult: (Boolean, String) -> Unit): () -> Unit {
+    val ctx = LocalContext.current
+    val l = LocalLang.current
+    val scope = rememberCoroutineScope()
+    val done by rememberUpdatedState(onResult)
+    fun connected(token: String) {
+        Settings(ctx).driveOn = true
+        scope.launch {
+            val r = DriveSync.saveAll(ctx.applicationContext, token)
+            done(true, r.fold(
+                onSuccess = { n -> if (n == 0) l.t("연결됐어요. 새로 저장할 기록은 없어요.", "Connected. Nothing new to save.")
+                    else l.t("연결됐어요. 기록 ${n}개를 드라이브에 저장했어요.", "Connected. Saved $n runs to Drive.") },
+                onFailure = { l.t("연결됐지만 저장하지 못했어요: ${it.message}", "Connected, but couldn't save: ${it.message}") }))
+        }
+    }
+    val consent = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { res ->
+        DriveSync.tokenFrom(ctx, res.data).fold(
+            onSuccess = { connected(it) },
+            onFailure = { done(false, l.t("연결하지 못했어요: ${it.message}", "Couldn't connect: ${it.message}")) })
+    }
+    return {
+        scope.launch {
+            when (val a = DriveSync.authorize(ctx)) {
+                is DriveSync.Auth.Token -> connected(a.value)
+                is DriveSync.Auth.NeedsConsent -> consent.launch(IntentSenderRequest.Builder(a.intent.intentSender).build())
+                is DriveSync.Auth.Failed -> done(false, l.t("연결하지 못했어요: ${a.message}", "Couldn't connect: ${a.message}"))
+            }
+        }
+    }
+}
+
+/** 첫 러닝 저장 뒤 한 번만 뜨는 "구글 드라이브에 저장할까요?" 창 */
+@Composable
+private fun DrivePromptDialog(onClose: () -> Unit) {
+    val l = LocalLang.current
+    var busy by remember { mutableStateOf(false) }
+    var msg by remember { mutableStateOf<String?>(null) }
+    val connect = rememberDriveConnect { _, m -> busy = false; msg = m }
+    AlertDialog(
+        onDismissRequest = { if (!busy) onClose() },
+        title = { Text(l.t("구글 드라이브에 저장할까요?", "Save runs to Google Drive?")) },
+        text = {
+            Text(msg ?: if (busy) l.t("연결하는 중…", "Connecting…") else l.t(
+                "러닝 기록을 내 드라이브 '${DriveSync.FOLDER}' 폴더에 자동으로 저장합니다. 구글 계정을 한 번 고르면 끝이에요. 나중에 설정에서도 켤 수 있어요.",
+                "Runs will be saved automatically to the '${DriveSync.FOLDER}' folder in your Drive. Just pick your Google account once. You can also turn this on later in Settings."))
+        },
+        confirmButton = {
+            if (msg == null) TextButton(onClick = { busy = true; connect() }, enabled = !busy) { Text(l.t("Google로 연결", "Connect with Google")) }
+            else TextButton(onClick = onClose) { Text(l.t("확인", "OK")) }
+        },
+        dismissButton = { if (msg == null) TextButton(onClick = onClose, enabled = !busy) { Text(l.t("나중에", "Later")) } },
+    )
+}
+
 // ---------------------------------------------------------------- 앱 이름 개인화
 
 /** Run◯◯Run의 가운데 두 글자와 글자별 색. 저장은 설정 화면의 '변경사항 저장'으로. */
 @Composable
 private fun BrandSettings(look: Brand.Look, onChange: (Brand.Look) -> Unit) {
     val l = LocalLang.current
-    Text(l.t("앱 이름", "App name"), style = MaterialTheme.typography.titleMedium)
-    Text(l.t("가운데 두 글자를 한 글자씩 바꾸고 글자마다 색을 고르세요. 휴대폰 홈 화면의 아이콘 이름은 그대로입니다.",
-            "Change each of the two middle letters and pick a color for each. The launcher icon name stays the same."),
-        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+    Text(l.t("앱 이름 설정", "App name"), style = MaterialTheme.typography.titleMedium)
     Wordmark(look = look.copy(a = look.a.ifBlank { " " }, b = look.b.ifBlank { " " }), size = 34)
     @Composable
     fun LetterRow(label: String, value: String, color: Long, onValue: (String) -> Unit, onColor: (Long) -> Unit) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        // 글자 입력칸 오른쪽에 색상표(작은 동그라미 4개씩 두 줄)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             OutlinedTextField(value = value, onValueChange = { v -> onValue(v.trim().takeLast(1).uppercase()) },
-                singleLine = true, modifier = Modifier.width(120.dp), label = { Text(label) })
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Brand.PALETTE.forEach { c ->
-                    Box(
-                        Modifier.size(30.dp).clip(CircleShape).background(Color(c))
-                            .then(if (c == color) Modifier.border(3.dp, MaterialTheme.colorScheme.onSurface, CircleShape) else Modifier)
-                            .clickable { onColor(c) }
-                    )
+                singleLine = true, modifier = Modifier.width(110.dp), label = { Text(label) })
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Brand.PALETTE.chunked(4).forEach { rowColors ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        rowColors.forEach { c ->
+                            Box(
+                                Modifier.size(18.dp).clip(CircleShape).background(Color(c))
+                                    .then(if (c == color) Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, CircleShape) else Modifier)
+                                    .clickable { onColor(c) }
+                            )
+                        }
+                    }
                 }
             }
         }

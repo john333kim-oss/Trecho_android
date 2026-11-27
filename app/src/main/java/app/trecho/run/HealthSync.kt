@@ -59,7 +59,7 @@ class HealthSync(private val ctx: Context, private val repo: RunRepository) {
             val sourceName = sourceName(origin.packageName)
             if (sourceName == "Garmin") latest = maxOf(latest ?: 0L, s.startTime.toEpochMilli())
             val id = "hc-" + s.metadata.id.filter { it.isLetterOrDigit() || it == '-' }
-            if (repo.exists(id)) continue
+            if (repo.exists(id) || repo.deletedNear(s.startTime.toEpochMilli())) continue
             if (apiStarts.any { kotlin.math.abs(it - s.startTime.toEpochMilli()) < 120_000 }) continue
             val agg = client.aggregate(
                 AggregateRequest(

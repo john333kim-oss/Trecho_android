@@ -48,9 +48,32 @@ class RunRepository(private val ctx: Context) {
 
     suspend fun save(r: RunRecord) = withContext(Dispatchers.IO) { write(r) }
 
-    fun exists(id: String) = fileOf(id).exists() || legacyOf(id).exists()
+    /** 드라이브 저장 표시. 그사이 지운 기록은 되살리지 않는다 */
+    suspend fun markUploaded(id: String) { get(id)?.let { save(it.copy(uploaded = true)) } }
 
-    suspend fun delete(id: String) = withContext(Dispatchers.IO) { fileOf(id).delete(); legacyOf(id).delete() }
+    /** 저장돼 있거나, 사용자가 지운 기록이면 true (가져오기가 지운 기록을 되살리지 않도록) */
+    fun exists(id: String) = fileOf(id).exists() || legacyOf(id).exists() || deleted().any { it.first == id }
+
+    /** 지운 기록과 시작 시각이 2분 안으로 같은 러닝인지 (Garmin API·Health Connect 쪽 같은 러닝도 막는다) */
+    fun deletedNear(startMs: Long) = deleted().any { kotlin.math.abs(it.second - startMs) < 120_000 }
+
+    /**
+     * 기록을 지우고 '지운 목록'(id, 시작 시각)에 남긴다. 이 목록이 없으면 Garmin·Health Connect
+     * 동기화가 같은 러닝을 다시 가져와 지운 기록이 되살아난다.
+     */
+    suspend fun delete(id: String) = withContext(Dispatchers.IO) {
+        val start = runCatching { get(id)?.startWallMs }.getOrNull() ?: 0L
+        synchronized(tombLock) { tombFile.appendText("$id,$start\n") }
+        fileOf(id).delete(); legacyOf(id).delete()
+    }
+
+    private val tombFile = File(ctx.filesDir, "deleted_runs.txt")
+    private fun deleted(): List<Pair<String, Long>> = synchronized(tombLock) {
+        if (!tombFile.exists()) emptyList() else tombFile.readLines().mapNotNull { line ->
+            val p = line.split(','); if (p.size == 2) p[0] to (p[1].toLongOrNull() ?: 0L) else null
+        }
+    }
+    private companion object { val tombLock = Any() }
 
     private fun toJson(r: RunRecord) = JSONObject().apply {
         put("v", 1)
@@ -108,6 +131,10 @@ class Settings(ctx: Context) {
     var driveOn: Boolean
         get() = prefs.getBoolean("driveOn", false)
         set(v) = prefs.edit().putBoolean("driveOn", v).apply()
+    /** 첫 러닝 뒤 드라이브 연결 안내를 이미 보여줬는지 */
+    var drivePromptDone: Boolean
+        get() = prefs.getBoolean("drivePromptDone", false)
+        set(v) = prefs.edit().putBoolean("drivePromptDone", v).apply()
     /** 러닝이 끝나면 드라이브에 자동 저장 */
     var autoUpload: Boolean
         get() = prefs.getBoolean("autoUpload", true)

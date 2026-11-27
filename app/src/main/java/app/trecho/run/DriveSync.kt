@@ -73,7 +73,7 @@ object DriveSync {
                 val folder = folderId(t)
                 pending.forEach { r ->
                     upload(t, folder, r)
-                    repo.save(r.copy(uploaded = true))
+                    repo.markUploaded(r.id)
                 }
                 pending.size
             }

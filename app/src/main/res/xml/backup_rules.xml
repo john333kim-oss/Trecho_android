@@ -2,5 +2,6 @@
 <!-- Android 11 이하: 러닝 기록(files/runs)과 설정만 Google 드라이브 백업에 포함 -->
 <full-backup-content>
     <include domain="file" path="runs/" />
+        <include domain="file" path="deleted_runs.txt" />
     <include domain="sharedpref" path="settings.xml" />
 </full-backup-content>
