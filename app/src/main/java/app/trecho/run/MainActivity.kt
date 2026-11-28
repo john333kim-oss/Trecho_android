@@ -245,6 +245,8 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
                     it.latestGarminMs?.let { m -> latest = maxOf(latest ?: 0L, m) }
                 }
             }
+            // 앱이 직접 잰 러닝과 겹치는 가져온 기록은 빼고 앱 기록만 남긴다(John 결정)
+            if (runCatching { repo.removeImportedDuplicates() }.getOrDefault(0) > 0) changed = true
             if (ok) settings.lastSyncMs = System.currentTimeMillis()
             garmin = garmin.copy(lastSyncMs = settings.lastSyncMs, latestGarminMs = latest, syncing = false)
             if (changed) reload++

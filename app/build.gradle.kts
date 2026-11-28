@@ -21,8 +21,8 @@ android {
         applicationId = "app.trecho.run"
         minSdk = 29          // Android 10+ (갤럭시 S24+는 Android 14 이상)
         targetSdk = 35
-        versionCode = 19
-        versionName = "0.9.6"
+        versionCode = 20
+        versionName = "0.9.7"
         manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
         buildConfigField("boolean", "HAS_MAPS_KEY", if (mapsApiKey.isNotBlank()) "true" else "false")
     }
