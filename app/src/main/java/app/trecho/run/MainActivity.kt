@@ -256,6 +256,33 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
         lifecycle.addObserver(obs)
         onDispose { lifecycle.removeObserver(obs) }
     }
+    // ---- 워치 러닝 상태: 워치의 심박 방송(BLE 광고)이 보이면 러닝중. 기록에는 쓰지 않고 표시만 한다.
+    val watchRunning by WatchPresence.running.collectAsState()
+    val blePerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        WatchPresence.start(ctx.applicationContext, settings)
+    }
+    DisposableEffect(lifecycle) {
+        val obs = LifecycleEventObserver { _, e ->
+            when (e) {
+                Lifecycle.Event.ON_START -> if (WatchPresence.hasPermission(ctx)) WatchPresence.start(ctx.applicationContext, settings)
+                    else if (!settings.blePermAsked) { settings.blePermAsked = true; blePerm.launch(WatchPresence.permissions()) }
+                Lifecycle.Event.ON_STOP -> WatchPresence.stop()
+                else -> {}
+            }
+        }
+        lifecycle.addObserver(obs)
+        onDispose { lifecycle.removeObserver(obs); WatchPresence.stop() }
+    }
+    // 러닝이 끝나면 Garmin Connect 동기화를 기다렸다가 1분·3분 뒤 새 기록을 가져온다
+    var wasRunning by remember { mutableStateOf(false) }
+    LaunchedEffect(watchRunning) {
+        if (watchRunning) { wasRunning = true; return@LaunchedEffect }
+        if (!wasRunning) return@LaunchedEffect
+        wasRunning = false
+        delay(60_000); syncGarmin()
+        delay(120_000); syncGarmin()
+    }
+
     /** 새로고침: 기록 다시 읽기 + Garmin 동기화 */
     fun refreshHome() { reload++; syncGarmin() }
 
@@ -312,7 +339,7 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
                 when (val o = overlay) {
                     is Overlay.Detail -> DetailScreen(o.id, repo, settings, runs, onShare = { startShare(it) }, onBack = { reload++; overlay = null })
                     null -> when (tab) {
-                        Tab.Home -> HomeScreen(runs, userName, garminLink(garmin), garmin.syncing,
+                        Tab.Home -> HomeScreen(runs, userName, garminLink(garmin), watchRunning, garmin.syncing,
                             onRefresh = { refreshHome() },
                             onWatch = { watchSheet = true },
                             onShare = { startShare(it) },
@@ -376,7 +403,7 @@ private data class GarminUi(val status: HealthSync.Status, val lastSyncMs: Long,
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HomeScreen(
-    runs: List<RunRecord>, userName: String, link: Watch.Link, refreshing: Boolean, onRefresh: () -> Unit,
+    runs: List<RunRecord>, userName: String, link: Watch.Link, running: Boolean, refreshing: Boolean, onRefresh: () -> Unit,
     onWatch: () -> Unit, onShare: (RunRecord) -> Unit, onOpen: (String) -> Unit,
 ) {
     val l = LocalLang.current
@@ -394,6 +421,11 @@ private fun HomeScreen(
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Wordmark()
                 Spacer(Modifier.weight(1f))
+                // 워치가 러닝 중 심박을 방송하면 '러닝중', 아니면 '종료/대기중'
+                Text(if (running) l.t("러닝중", "Running") else l.t("종료/대기중", "Idle"),
+                    fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                    color = if (running) Color(0xFF2EB872) else MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(8.dp))
                 WatchIcon(link, onClick = onWatch, label = when (link) {
                     Watch.Link.CONNECTED -> l.t("Garmin 연결됨", "Garmin connected")
                     Watch.Link.CONNECTING -> l.t("Garmin에서 가져오는 중", "Syncing from Garmin")
@@ -422,15 +454,6 @@ private fun HomeScreen(
                     }
                 }
             }
-        }
-        item {
-            Text(
-                "Build by 김기룡",
-                fontSize = 13.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.End,
-                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 8.dp),
-            )
         }
     }
     }
@@ -522,7 +545,8 @@ private fun WatchIllustration(connected: Boolean, battery: Int?, modifier: Modif
 @Composable
 private fun RunCard(r: RunRecord, userName: String, onShare: () -> Unit, onClick: () -> Unit) {
     val l = LocalLang.current
-    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).clickable(onClick = onClick)) {
+    Column(Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp))
+        .background(MaterialTheme.colorScheme.surface).clickable(onClick = onClick)) {
         Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Avatar(userName, 22.dp)
             Spacer(Modifier.width(8.dp))

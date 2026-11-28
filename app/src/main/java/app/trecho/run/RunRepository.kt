@@ -160,6 +160,11 @@ class Settings(ctx: Context) {
         set(v) = prefs.edit().putBoolean("watchAuto", v).apply()
     val hasWatch get() = watchAddress.isNotEmpty() || watchName.isNotEmpty()
 
+    /** 워치 상태 표시용 블루투스 권한을 이미 한 번 물었는지 */
+    var blePermAsked: Boolean
+        get() = prefs.getBoolean("blePermAsked", false)
+        set(v) = prefs.edit().putBoolean("blePermAsked", v).apply()
+
     var userName: String
         get() = prefs.getString("userName", "").orEmpty()
         set(v) = prefs.edit().putString("userName", v.trim()).apply()
