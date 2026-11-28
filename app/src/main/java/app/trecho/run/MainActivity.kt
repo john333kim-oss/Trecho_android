@@ -187,29 +187,18 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
     val l = LocalLang.current
     var tab by remember { mutableStateOf(Tab.Home) }
     var overlay by remember { mutableStateOf<Overlay?>(null) }
-    var recording by remember { mutableStateOf(RunSession.isActive) }
     var runs by remember { mutableStateOf<List<RunRecord>>(emptyList()) }
     var reload by remember { mutableStateOf(0) }
     // 새 러닝이 저장됐을 때 드라이브 미연결이면 한 번만 "드라이브에 저장할까요?" 묻기
     var drivePrompt by remember { mutableStateOf(false) }
     fun maybeAskDrive() { if (!settings.driveOn && !settings.drivePromptDone) drivePrompt = true }
     var userName by remember { mutableStateOf(settings.userName) }
-    LaunchedEffect(reload) { runs = repo.all() }
+    // Garmin 워치 데이터만 쓴다: 예전에 폰 GPS로 잰 기록은 목록·통계에서 뺀다(파일은 남겨 둠)
+    LaunchedEffect(reload) { runs = repo.all().filter { it.source != "phone" } }
 
-    // 워치 심박 방송으로 서비스가 기록을 자동 시작·저장하면 화면도 따라간다
-    val liveSnap by RunSession.snapshot.collectAsState()
-    LaunchedEffect(liveSnap != null) { if (liveSnap != null) recording = true }
-    val autoSaved by RunSession.autoSaved.collectAsState()
-    LaunchedEffect(autoSaved) {
-        val id = autoSaved ?: return@LaunchedEffect
-        RunSession.autoSaved.value = null
-        recording = false; reload++; overlay = null; tab = Tab.Home
-        maybeAskDrive()
-    }
-    val watch by Watch.status.collectAsState()
     var watchSheet by remember { mutableStateOf(false) }
     val appCtx = LocalContext.current
-    remember { Brand.load(appCtx); Watch.loadBattery(appCtx); true }
+    remember { Brand.load(appCtx); true }
 
     // ---- Garmin(Health Connect) 연동
     val ctx = LocalContext.current
@@ -245,11 +234,12 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
                     it.latestGarminMs?.let { m -> latest = maxOf(latest ?: 0L, m) }
                 }
             }
-            // 앱이 직접 잰 러닝과 겹치는 가져온 기록은 빼고 앱 기록만 남긴다(John 결정)
-            if (runCatching { repo.removeImportedDuplicates() }.getOrDefault(0) > 0) changed = true
             if (ok) settings.lastSyncMs = System.currentTimeMillis()
             garmin = garmin.copy(lastSyncMs = settings.lastSyncMs, latestGarminMs = latest, syncing = false)
-            if (changed) reload++
+            if (changed) {
+                reload++; maybeAskDrive()
+                if (DriveSync.autoSave(ctx.applicationContext) > 0) reload++   // 새로 가져온 Garmin 러닝을 드라이브에도
+            }
         }
     }
     val hcPermLauncher = rememberLauncherForActivityResult(PermissionController.createRequestPermissionResultContract()) { syncGarmin() }
@@ -257,23 +247,17 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
     DisposableEffect(lifecycle) {
         val obs = LifecycleEventObserver { _, e ->
             if (e == Lifecycle.Event.ON_RESUME) {
-                reload++   // 워치로 자동 저장된 기록이 홈에 바로 보이게
-                syncGarmin()
-                Watch.refreshBt(ctx)
+                reload++
+                syncGarmin()   // 앱을 열 때마다 Garmin에서 새 러닝 가져오기
                 // 지난번에 못 올린 기록(오프라인·백그라운드)을 드라이브에 마저 저장
                 scope.launch { if (DriveSync.autoSave(ctx.applicationContext) > 0) reload++ }
-                // 워치 자동 기록을 켜 두었으면 앱을 열 때마다 대기 서비스를 확인(재부팅·종료 후 복구)
-                if (settings.watchAuto && settings.hasWatch && Watch.hasBlePermission(ctx) &&
-                    ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-                    runCatching { RunService.send(ctx, RunService.ACTION_WATCH_ON) }
-                }
             }
         }
         lifecycle.addObserver(obs)
         onDispose { lifecycle.removeObserver(obs) }
     }
-    /** 홈 새로고침: 기록 다시 읽기 + Garmin 동기화 + 블루투스 상태 */
-    fun refreshHome() { reload++; syncGarmin(); Watch.refreshBt(ctx) }
+    /** 새로고침: 기록 다시 읽기 + Garmin 동기화 */
+    fun refreshHome() { reload++; syncGarmin() }
 
     fun connectGarmin() {
         if (garmin.api != ApiState.OFF) { syncGarmin(); return }
@@ -318,27 +302,21 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
         photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
 
-    BackHandler(enabled = !recording && (overlay != null || tab != Tab.Home)) {
+    BackHandler(enabled = (overlay != null || tab != Tab.Home)) {
         if (overlay != null) overlay = null else tab = Tab.Home
     }
 
     Box(Modifier.fillMaxSize().safeDrawingPadding()) {
-        if (recording) {
-            RecordScreen(repo, settings, onFinished = { id ->
-                recording = false; reload++
-                if (id != null) { overlay = Overlay.Detail(id); maybeAskDrive() } else tab = Tab.Home
-            })
-        } else Column(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (val o = overlay) {
                     is Overlay.Detail -> DetailScreen(o.id, repo, settings, runs, onShare = { startShare(it) }, onBack = { reload++; overlay = null })
                     null -> when (tab) {
-                        Tab.Home -> HomeScreen(runs, userName, watch, garmin.syncing,
+                        Tab.Home -> HomeScreen(runs, userName, garminLink(garmin), garmin.syncing,
                             onRefresh = { refreshHome() },
                             onWatch = { watchSheet = true },
                             onShare = { startShare(it) },
-                            onOpen = { overlay = Overlay.Detail(it) },
-                            onGoRun = { recording = true })
+                            onOpen = { overlay = Overlay.Detail(it) })
                         Tab.Calendar -> CalendarScreen(runs, garmin.syncing, onRefresh = { refreshHome() },
                             onOpen = { overlay = Overlay.Detail(it) }, onShareMonth = { m, rs -> shareMonth(m, rs) })
                         Tab.Settings -> SettingsScreen(settings, garminApi, onLang, garmin, onGarmin = { connectGarmin() },
@@ -355,7 +333,7 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
         }
     }
 
-    if (watchSheet) WatchSheet(watch, settings, onDismiss = { watchSheet = false })
+    if (watchSheet) WatchSheet(garmin, settings, onSync = { refreshHome() }, onDismiss = { watchSheet = false })
     if (drivePrompt) DrivePromptDialog(onClose = { settings.drivePromptDone = true; drivePrompt = false; reload++ })
 
     if (shareBusy) {
@@ -383,6 +361,13 @@ private fun App(repo: RunRepository, settings: Settings, onLang: (Lang) -> Unit)
 
 private enum class ApiState { OFF, OK, KEY_ERROR, NET_ERROR }
 
+/** 홈 시계 아이콘 상태: 가져오는 중이면 회전, Garmin(API 또는 Health Connect)이 연결돼 있으면 초록 */
+private fun garminLink(g: GarminUi): Watch.Link = when {
+    g.syncing -> Watch.Link.CONNECTING
+    g.api == ApiState.OK || (g.api == ApiState.OFF && g.status == HealthSync.Status.CONNECTED) -> Watch.Link.CONNECTED
+    else -> Watch.Link.OFF
+}
+
 private data class GarminUi(val status: HealthSync.Status, val lastSyncMs: Long, val latestGarminMs: Long?, val syncing: Boolean,
                             val api: ApiState = ApiState.OFF, val apiError: String? = null)
 
@@ -391,8 +376,8 @@ private data class GarminUi(val status: HealthSync.Status, val lastSyncMs: Long,
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HomeScreen(
-    runs: List<RunRecord>, userName: String, watch: Watch.Status, refreshing: Boolean, onRefresh: () -> Unit,
-    onWatch: () -> Unit, onShare: (RunRecord) -> Unit, onOpen: (String) -> Unit, onGoRun: () -> Unit,
+    runs: List<RunRecord>, userName: String, link: Watch.Link, refreshing: Boolean, onRefresh: () -> Unit,
+    onWatch: () -> Unit, onShare: (RunRecord) -> Unit, onOpen: (String) -> Unit,
 ) {
     val l = LocalLang.current
     val bests = remember(runs) { personalBests(runs) }
@@ -409,10 +394,10 @@ private fun HomeScreen(
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Wordmark()
                 Spacer(Modifier.weight(1f))
-                WatchIcon(watch.link, onClick = onWatch, label = when (watch.link) {
-                    Watch.Link.CONNECTED -> l.t("워치 연결됨", "Watch connected")
-                    Watch.Link.CONNECTING -> l.t("워치 연결 중", "Watch connecting")
-                    else -> l.t("워치 연결 안 됨", "Watch not connected")
+                WatchIcon(link, onClick = onWatch, label = when (link) {
+                    Watch.Link.CONNECTED -> l.t("Garmin 연결됨", "Garmin connected")
+                    Watch.Link.CONNECTING -> l.t("Garmin에서 가져오는 중", "Syncing from Garmin")
+                    else -> l.t("Garmin 연결 안 됨", "Garmin not connected")
                 })
             }
         }
@@ -420,10 +405,11 @@ private fun HomeScreen(
             items(recent, key = { "recent-" + it.id }) { r -> RunCard(r, userName, onShare = { onShare(r) }) { onOpen(r.id) } }
         } else item {
             Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(l.t("아직 기록이 없습니다. 첫 러닝을 시작해 보세요.", "No runs yet. Start your first run."),
+                Text(l.t("아직 기록이 없습니다. Garmin 워치로 달리고 폰의 Garmin Connect에 동기화되면 여기에 나타납니다.",
+                        "No runs yet. Run with your Garmin watch; runs appear here after they sync to Garmin Connect on your phone."),
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Button(onClick = onGoRun, modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(28.dp)) {
-                    Text(l.t("러닝 시작", "Start a run"), fontWeight = FontWeight.Bold)
+                Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(28.dp)) {
+                    Text(l.t("Garmin에서 가져오기", "Import from Garmin"), fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -450,15 +436,17 @@ private fun HomeScreen(
     }
 }
 
-/** 워치 창 (홈의 시계 아이콘을 누르면): 워치 그림 + 모델명 + 연결 상태 + 배터리 */
+/** 워치 창 (홈의 시계 아이콘을 누르면): 워치 그림 + Garmin 연결 상태 + 마지막 가져오기 */
 @Composable
-private fun WatchSheet(watch: Watch.Status, settings: Settings, onDismiss: () -> Unit) {
+private fun WatchSheet(g: GarminUi, settings: Settings, onSync: () -> Unit, onDismiss: () -> Unit) {
     val l = LocalLang.current
-    val connected = watch.link == Watch.Link.CONNECTED
-    val model = settings.watchName.ifBlank { settings.watchAddress }
+    val link = garminLink(g)
+    val connected = link == Watch.Link.CONNECTED
+    val fmt = DateTimeFormatter.ofPattern("M/d HH:mm")
+    fun at(ms: Long) = fmt.format(Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()))
     AlertDialog(
         onDismissRequest = onDismiss,
-        confirmButton = {},
+        confirmButton = { TextButton(onClick = onSync, enabled = !g.syncing) { Text(l.t("지금 가져오기", "Sync now")) } },
         title = {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.weight(1f))
@@ -467,23 +455,18 @@ private fun WatchSheet(watch: Watch.Status, settings: Settings, onDismiss: () ->
         },
         text = {
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                WatchIllustration(connected, watch.battery, Modifier.size(170.dp, 210.dp))
-                Text(model.ifBlank { l.t("등록한 워치 없음", "No watch registered") },
-                    fontSize = 24.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-                Text(if (connected) l.t("연결됨", "Connected") else l.t("연결 안 됨", "Not connected"),
-                    fontSize = 16.sp, color = if (connected) Color(0xFF2EB872) else MaterialTheme.colorScheme.onSurfaceVariant)
-                val bat = watch.battery
-                Text(
-                    if (bat != null) l.t("배터리 $bat%", "Battery $bat%") else l.t("배터리 정보 없음", "Battery unknown"),
-                    fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-                Text(
-                    when {
-                        bat == null -> l.t("워치에서 러닝을 시작해 연결되면 읽어 옵니다. 워치가 배터리 정보를 보내지 않으면 표시되지 않습니다.",
-                            "Read when the watch connects during a run. Not shown if the watch doesn't share it.")
-                        connected -> l.t("지금 연결에서 읽은 값", "Read from the current connection")
-                        else -> l.t("마지막 확인 ", "Last checked ") + DateTimeFormatter.ofPattern("M/d HH:mm").format(
-                            Instant.ofEpochMilli(watch.batteryMs).atZone(ZoneId.systemDefault()))
-                    },
+                WatchIllustration(connected, null, Modifier.size(170.dp, 210.dp))
+                Text(settings.watchName.ifBlank { "Garmin" }, fontSize = 24.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                Text(when (link) {
+                    Watch.Link.CONNECTING -> l.t("가져오는 중…", "Syncing…")
+                    Watch.Link.CONNECTED -> l.t("Garmin 연결됨", "Garmin connected")
+                    else -> l.t("Garmin 연결 안 됨 · 설정에서 API 키나 Health Connect를 연결하세요", "Not connected · add an API key or Health Connect in Settings")
+                }, fontSize = 16.sp, textAlign = TextAlign.Center,
+                    color = if (connected) Color(0xFF2EB872) else MaterialTheme.colorScheme.onSurfaceVariant)
+                if (g.lastSyncMs > 0) Text(l.t("마지막 가져오기 ", "Last sync ") + at(g.lastSyncMs), fontSize = 14.sp)
+                g.latestGarminMs?.let { Text(l.t("최근 Garmin 러닝 ", "Latest Garmin run ") + at(it), fontSize = 14.sp) }
+                Text(l.t("러닝은 워치 → 폰의 Garmin Connect 동기화가 끝난 뒤에 가져올 수 있습니다.",
+                        "Runs can be imported after the watch syncs to Garmin Connect on your phone."),
                     fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
             }
         },
@@ -592,8 +575,6 @@ private fun RunRow(r: RunRecord, onClick: () -> Unit) {
         Text("${formatKm(r.distM)} km", fontWeight = FontWeight.Black, fontSize = 18.sp)
     }
 }
-
-// ---------------------------------------------------------------- 러닝 탭 (시작 전)
 
 // ---------------------------------------------------------------- 캘린더
 
@@ -827,128 +808,6 @@ private fun Avatar(name: String, size: androidx.compose.ui.unit.Dp) {
     }
 }
 
-// ---------------------------------------------------------------- 러닝 중
-
-@Composable
-private fun RecordScreen(repo: RunRepository, settings: Settings, onFinished: (String?) -> Unit) {
-    val l = LocalLang.current
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val snap by RunSession.snapshot.collectAsState()
-    val path by RunSession.path.collectAsState()
-    var confirmStop by remember { mutableStateOf(false) }
-    var permissionDenied by remember { mutableStateOf(false) }
-
-    val perms = buildList {
-        add(Manifest.permission.ACCESS_FINE_LOCATION)
-        add(Manifest.permission.ACCESS_COARSE_LOCATION)
-        add(Manifest.permission.ACTIVITY_RECOGNITION)
-        if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
-    }.toTypedArray()
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
-        if (res[Manifest.permission.ACCESS_FINE_LOCATION] == true) RunService.send(ctx, RunService.ACTION_START)
-        else permissionDenied = true
-    }
-    LaunchedEffect(Unit) {
-        if (!RunSession.isActive) {
-            val missing = perms.filter { ContextCompat.checkSelfPermission(ctx, it) != PackageManager.PERMISSION_GRANTED }
-            if (missing.isEmpty()) RunService.send(ctx, RunService.ACTION_START) else launcher.launch(perms)
-        }
-    }
-
-    fun finish(save: Boolean) {
-        val rec = RunSession.finish()
-        RunService.send(ctx, RunService.ACTION_STOP)
-        if (!save || rec == null) { onFinished(null); return }
-        scope.launch {
-            repo.save(rec)
-            DriveSync.autoSaveLater(ctx)
-            onFinished(rec.id)
-        }
-    }
-
-    if (permissionDenied) {
-        Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(l.t("위치 권한이 필요합니다", "Location permission needed"), style = MaterialTheme.typography.titleLarge)
-            Text(l.t("거리와 경로를 재려면 '정확한 위치' 권한을 허용해 주세요. 휴대폰 설정 > 애플리케이션 > RunKKRun > 권한에서 바꿀 수 있습니다.",
-                "Allow 'Precise location' to measure distance and route. You can change it in Settings > Apps > RunKKRun > Permissions."))
-            Button(onClick = {
-                ctx.startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + ctx.packageName)))
-            }) { Text(l.t("설정 열기", "Open settings")) }
-            OutlinedButton(onClick = { onFinished(null) }) { Text(l.t("돌아가기", "Back")) }
-        }
-        return
-    }
-
-    val s = snap
-    Column(Modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxWidth().weight(0.38f)) {
-            RouteMap(path, follow = true, lineColor = MaterialTheme.colorScheme.secondary, modifier = Modifier.fillMaxSize())
-            GpsChip(s?.gpsOk == true, Modifier.align(Alignment.TopEnd).padding(12.dp))
-        }
-        Column(
-            Modifier.fillMaxWidth().weight(0.62f).padding(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                Text(formatKm(s?.distM ?: 0.0), fontSize = 76.sp, fontWeight = FontWeight.Black, fontStyle = FontStyle.Italic)
-                Text(l.t("킬로미터", "kilometers"), color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Stat(l.t("시간", "Time"), formatDuration(s?.activeMs ?: 0), big = true)
-                Stat(l.t("현재 페이스", "Current pace"), formatPace(s?.currentPaceSecPerKm), big = true)
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Stat(l.t("평균 페이스", "Avg pace"), formatPace(s?.avgPaceSecPerKm), big = true)
-                Stat(l.t("케이던스", "Cadence"), s?.cadenceSpm?.let { "$it spm" } ?: "--", big = true)
-            }
-            s?.heartRate?.let { hr ->
-                Text("♥ $hr bpm", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
-            }
-            s?.splits?.lastOrNull()?.let {
-                Text(l.t("${it.index}km 구간 ${formatPace(it.paceSecPerKm)}/km", "Km ${it.index} split ${formatPace(it.paceSecPerKm)}/km"), color = MaterialTheme.colorScheme.secondary,
-                    fontWeight = FontWeight.Bold, modifier = Modifier.fillMaxWidth())
-            }
-            if (!confirmStop) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    val paused = s?.state == RunState.PAUSED
-                    Button(
-                        onClick = { RunService.send(ctx, if (paused) RunService.ACTION_RESUME else RunService.ACTION_PAUSE) },
-                        modifier = Modifier.weight(1f).height(64.dp), shape = RoundedCornerShape(32.dp),
-                    ) { Text(if (paused) l.t("다시 시작", "Resume") else l.t("일시정지", "Pause"), fontSize = 18.sp, fontWeight = FontWeight.Bold) }
-                    OutlinedButton(onClick = { confirmStop = true }, modifier = Modifier.weight(1f).height(64.dp),
-                        shape = RoundedCornerShape(32.dp)) { Text(l.t("끝내기", "Finish"), fontSize = 18.sp) }
-                }
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { finish(true) }, modifier = Modifier.fillMaxWidth().height(56.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)) {
-                        Text(l.t("저장하고 끝내기", "Save and finish"), fontWeight = FontWeight.Bold)
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { confirmStop = false }, modifier = Modifier.weight(1f)) { Text(l.t("계속 달리기", "Keep running")) }
-                        TextButton(onClick = { finish(false) }, modifier = Modifier.weight(1f)) { Text(l.t("기록 버리기", "Discard")) }
-                    }
-                }
-            }
-        }
-    }
-    // 서비스가 없을 때도 화면 시간은 흐르게
-    LaunchedEffect(Unit) { while (true) { RunSession.tick(); delay(1000) } }
-}
-
-@Composable
-private fun GpsChip(ok: Boolean, modifier: Modifier) {
-    Row(
-        modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface).padding(horizontal = 10.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(8.dp).clip(CircleShape).background(if (ok) Color(0xFF1F8A5B) else MaterialTheme.colorScheme.secondary))
-        Spacer(Modifier.width(6.dp))
-        Text(if (ok) LocalLang.current.t("GPS 양호", "GPS good") else LocalLang.current.t("GPS 찾는 중", "Finding GPS"), fontSize = 12.sp)
-    }
-}
-
 // ---------------------------------------------------------------- 기록 상세
 
 @Composable
@@ -1133,17 +992,7 @@ private fun SettingsScreen(settings: Settings, garminApi: GarminApi, onLang: (La
                 TextButton(onClick = onGarmin) { Text(l.t("Health Connect 연결 (Garmin 기록 가져오기)", "Connect Health Connect (import Garmin runs)")) }
             }
         }
-        Panel { WatchSettings(settings) }
         Panel { DriveSettings(settings, auto) { auto = it } }
-        Panel {
-            Text(l.t("배터리 설정 (중요)", "Battery (important)"), style = MaterialTheme.typography.titleMedium)
-            Text(l.t("갤럭시는 배터리 절약 때문에 화면이 꺼진 앱을 멈출 수 있습니다. 러닝 중 기록이 끊기지 않게 '배터리 > 제한 없음'으로 바꿔 주세요.",
-                    "Galaxy phones may stop apps when the screen is off. Set 'Battery > Unrestricted' so runs keep recording."),
-                color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
-            OutlinedButton(onClick = {
-                ctx.startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + ctx.packageName)))
-            }) { Text(l.t("앱 설정 열기", "Open app settings")) }
-        }
         if (!BuildConfig.HAS_MAPS_KEY) Text(l.t("지도 © OpenStreetMap 기여자", "Map © OpenStreetMap contributors"),
             color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
         Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1281,118 +1130,6 @@ private fun BrandSettings(look: Brand.Look, onChange: (Brand.Look) -> Unit) {
     LetterRow(l.t("첫 글자", "1st letter"), look.a, look.color, { onChange(look.copy(a = it)) }, { onChange(look.copy(color = it)) })
     LetterRow(l.t("둘째 글자", "2nd letter"), look.b, look.colorB, { onChange(look.copy(b = it)) }, { onChange(look.copy(colorB = it)) })
     TextButton(onClick = { onChange(Brand.Look()) }) { Text(l.t("기본값(KK)으로", "Reset to KK")) }
-}
-
-// ---------------------------------------------------------------- 워치 심박 센서 등록
-
-private data class FoundWatch(val address: String, val name: String, val rssi: Int)
-
-/** 설정 > 워치: 심박 방송을 켠 워치를 찾아 등록하고, 자동 기록을 켜고 끈다. */
-@Composable
-private fun WatchSettings(settings: Settings) {
-    val ctx = LocalContext.current
-    val l = LocalLang.current
-    var name by remember { mutableStateOf(settings.watchName.ifBlank { settings.watchAddress }) }
-    var auto by remember { mutableStateOf(settings.watchAuto) }
-    var finding by remember { mutableStateOf(false) }
-    var denied by remember { mutableStateOf(false) }
-    val perms = buildList {
-        addAll(Watch.blePermissions())
-        add(Manifest.permission.ACCESS_FINE_LOCATION)
-        add(Manifest.permission.ACTIVITY_RECOGNITION)
-        if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
-    }.distinct().toTypedArray()
-    fun granted() = Watch.hasBlePermission(ctx) &&
-        ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-    var pending by remember { mutableStateOf<(() -> Unit)?>(null) }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        if (granted()) { denied = false; pending?.invoke() } else denied = true
-        pending = null
-    }
-    fun withPerms(block: () -> Unit) { if (granted()) block() else { pending = block; launcher.launch(perms) } }
-    fun applyAuto(on: Boolean) {
-        auto = on; settings.watchAuto = on
-        runCatching { RunService.send(ctx, if (on && settings.hasWatch) RunService.ACTION_WATCH_ON else RunService.ACTION_WATCH_OFF) }
-    }
-
-    Text(l.t("워치 심박 연결 (러닝 자동 기록)", "Watch heart rate (auto record)"), style = MaterialTheme.typography.titleMedium)
-    Text(l.t("워치 설정에서 '활동 중 심박 방송(Broadcast Heart Rate)'을 켜 두면, 워치에서 러닝을 시작할 때 이 앱이 심박 방송을 감지해 폰 GPS 기록을 자동으로 시작하고, 워치에서 끝내면 1분 뒤 자동으로 저장합니다. 일시정지는 따라가지 않습니다.",
-            "Turn on 'Broadcast Heart Rate During Activity' on the watch. When you start a run on the watch, this app detects the broadcast and starts recording with phone GPS; when you end it, the run is saved a minute later. Pauses are not followed."),
-        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
-    Text(if (name.isBlank()) l.t("등록한 워치 없음", "No watch registered") else l.t("등록됨: $name", "Registered: $name"),
-        fontWeight = FontWeight.Bold)
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(onClick = { withPerms { finding = true } }) { Text(l.t("워치 찾기", "Find watch")) }
-        if (name.isNotBlank()) TextButton(onClick = {
-            applyAuto(false); settings.watchAddress = ""; settings.watchName = ""; name = ""
-        }) { Text(l.t("등록 해제", "Remove")) }
-    }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(l.t("워치 러닝으로 자동 기록", "Auto record from watch runs"), modifier = Modifier.weight(1f))
-        Switch(checked = auto, enabled = name.isNotBlank(), onCheckedChange = { on -> if (on) withPerms { applyAuto(true) } else applyAuto(false) })
-    }
-    if (denied) Text(l.t("근처 기기·위치 권한이 필요합니다. 휴대폰 설정 > 애플리케이션에서 허용해 주세요.",
-        "Nearby devices and location permissions are needed. Allow them in phone Settings > Apps."), color = MaterialTheme.colorScheme.secondary, fontSize = 13.sp)
-
-    if (finding) FindWatchDialog(onPick = { w ->
-        settings.watchAddress = w.address; settings.watchName = w.name
-        name = w.name.ifBlank { w.address }; finding = false
-        applyAuto(true)
-    }, onDismiss = { finding = false })
-}
-
-@android.annotation.SuppressLint("MissingPermission")
-@Composable
-private fun FindWatchDialog(onPick: (FoundWatch) -> Unit, onDismiss: () -> Unit) {
-    val ctx = LocalContext.current
-    val l = LocalLang.current
-    var found by remember { mutableStateOf<List<FoundWatch>>(emptyList()) }
-    var scanning by remember { mutableStateOf(true) }
-    val btOn = remember { Watch.btEnabled(ctx) }
-    DisposableEffect(Unit) {
-        val scanner = ctx.getSystemService(android.bluetooth.BluetoothManager::class.java)?.adapter?.bluetoothLeScanner
-        val cb = object : android.bluetooth.le.ScanCallback() {
-            override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
-                val addr = result.device.address
-                val nm = result.scanRecord?.deviceName ?: runCatching { result.device.name }.getOrNull().orEmpty()
-                val w = FoundWatch(addr, nm, result.rssi)
-                found = (found.filter { it.address != addr } + w).sortedByDescending { it.rssi }
-            }
-        }
-        val filters = listOf(android.bluetooth.le.ScanFilter.Builder()
-            .setServiceUuid(android.os.ParcelUuid(Watch.HR_SERVICE)).build())
-        val settingsScan = android.bluetooth.le.ScanSettings.Builder().setScanMode(android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_LATENCY).build()
-        runCatching { scanner?.startScan(filters, settingsScan, cb) }
-        val h = android.os.Handler(android.os.Looper.getMainLooper())
-        val stop = Runnable { runCatching { scanner?.stopScan(cb) }; scanning = false }
-        h.postDelayed(stop, 30_000)
-        onDispose { h.removeCallbacks(stop); runCatching { scanner?.stopScan(cb) } }
-    }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text(l.t("닫기", "Close")) } },
-        title = { Text(l.t("워치 찾기", "Find watch")) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (!btOn) Text(l.t("휴대폰 블루투스를 먼저 켜 주세요.", "Turn on phone Bluetooth first."), color = MaterialTheme.colorScheme.secondary)
-                Text(l.t("Garmin 워치 설정에서 심박 방송을 켜고(모델마다 다름. 예: 센서 및 액세서리 > 손목 심박 > 활동 중 방송), 워치에서 러닝을 시작하세요. 아래에 워치 이름이 나오면 누르세요.",
-                        "On the Garmin watch, turn on heart-rate broadcast (varies by model, e.g. Sensors & Accessories > Wrist Heart Rate > Broadcast During Activity) and start a run. Tap your watch when it appears."),
-                    fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (found.isEmpty()) Text(if (scanning) l.t("심박 방송 찾는 중…", "Searching for heart-rate broadcast…") else l.t("찾지 못했습니다. 다시 열어 보세요.", "Nothing found. Try again."))
-                found.forEach { w ->
-                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { onPick(w) }
-                        .background(MaterialTheme.colorScheme.surfaceVariant).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(w.name.ifBlank { l.t("이름 없는 기기", "Unnamed device") }, fontWeight = FontWeight.Bold)
-                            Text(w.address, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Text("${w.rssi} dBm", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-        },
-    )
 }
 
 // ---------------------------------------------------------------- 공용

@@ -8,10 +8,7 @@ import app.trecho.run.core.toGpx
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.Identity
 import com.google.android.gms.common.api.Scope
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
@@ -85,10 +82,6 @@ object DriveSync {
         val st = Settings(ctx)
         return if (st.driveOn && st.autoUpload) saveAll(ctx).getOrDefault(0) else 0
     }
-
-    /** 화면·서비스가 닫혀도 끝까지 올리도록 앱 수명의 스코프에서 실행 */
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    fun autoSaveLater(ctx: Context) { val app = ctx.applicationContext; appScope.launch { autoSave(app) } }
 
     private fun folderId(token: String): String {
         val q = URLEncoder.encode("name='$FOLDER' and mimeType='application/vnd.google-apps.folder' and trashed=false", "UTF-8")

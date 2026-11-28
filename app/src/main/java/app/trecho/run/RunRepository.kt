@@ -48,25 +48,6 @@ class RunRepository(private val ctx: Context) {
 
     suspend fun save(r: RunRecord) = withContext(Dispatchers.IO) { write(r) }
 
-    /**
-     * 같은 러닝이 이 앱(폰 GPS)과 워치 가져오기(Garmin·Health Connect) 양쪽에 있으면 앱 기록을 남기고
-     * 가져온 쪽을 지운다(지운 목록에 남아 다시 들어오지 않음). 시간이 2분 여유로 겹치면 같은 러닝으로 본다.
-     * 지운 개수를 돌려준다.
-     */
-    suspend fun removeImportedDuplicates(): Int {
-        val runs = all()
-        fun span(r: RunRecord): LongRange {
-            val end = maxOf(r.startWallMs + r.activeMs, r.points.lastOrNull()?.wallMs ?: 0L)
-            return (r.startWallMs - 120_000)..(end + 120_000)
-        }
-        val phone = runs.filter { it.source == "phone" }.map { span(it) }
-        val dups = runs.filter { r ->
-            r.source != "phone" && phone.any { p -> val s = span(r); s.first <= p.last && p.first <= s.last }
-        }
-        dups.forEach { delete(it.id) }
-        return dups.size
-    }
-
     /** 드라이브 저장 표시. 그사이 지운 기록은 되살리지 않는다 */
     suspend fun markUploaded(id: String) { get(id)?.let { save(it.copy(uploaded = true)) } }
 
