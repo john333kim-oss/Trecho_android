@@ -582,7 +582,7 @@ private fun RunRow(r: RunRecord, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(r.title ?: dateLabel(l, r.startWallMs), fontWeight = FontWeight.Bold)
+            Text(dateLabel(l, r.startWallMs), fontWeight = FontWeight.Bold)
             Text("${formatDuration(r.activeMs)} · ${formatPace(r.avgPaceSecPerKm)}/km" +
                 (if (r.source != "phone") " · ${r.source}" else "") + if (r.uploaded) l.t(" · 드라이브 저장됨", " · In Drive") else "",
                 color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
